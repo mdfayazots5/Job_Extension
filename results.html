@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Jobs Collector</title>
+    <link rel="stylesheet" href="results.css">
+  </head>
+  <body>
+    <main class="page-shell">
+      <nav id="site-switcher" class="site-switcher" aria-label="Job site">
+        <button id="linkedin-site" class="site-choice" type="button" aria-pressed="false">
+          LinkedIn <span id="linkedin-site-count" class="site-count">0</span>
+        </button>
+        <button id="naukri-site" class="site-choice" type="button" aria-pressed="false">
+          Naukri <span id="naukri-site-count" class="site-count">0</span>
+        </button>
+      </nav>
+      <header class="page-header">
+        <h1 id="site-title">Jobs</h1>
+        <p id="run-subtitle" class="subtitle">Loading collection…</p>
+        <p id="total-count" class="total-count" aria-live="polite">0 jobs</p>
+      </header>
+
+      <div class="toolbar">
+        <div class="tabs" role="tablist" aria-label="Job application type">
+          <button
+            id="easy-tab"
+            class="tab"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="results-panel"
+            tabindex="0">Easy Apply (0)</button>
+          <button
+            id="company-tab"
+            class="tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="results-panel"
+            tabindex="-1">Company Apply (0)</button>
+        </div>
+        <div class="filters">
+          <label class="search-control">
+            <span id="search-label" class="visually-hidden">Search jobs by role or company</span>
+            <input id="search" type="search" autocomplete="off" placeholder="Search role or company">
+          </label>
+          <label class="review-filter">
+            <span class="visually-hidden">Filter by applicant review status</span>
+            <select id="applicant-review-filter">
+              <option value="">All review statuses</option>
+              <option value="actively-reviewing">Actively reviewing</option>
+              <option value="not-indicated">No status shown</option>
+            </select>
+          </label>
+          <label class="hide-opened-control">
+            <input id="hide-opened" type="checkbox">
+            <span>Hide opened</span>
+          </label>
+        </div>
+      </div>
+
+      <section
+        id="results-panel"
+        class="results-panel"
+        role="tabpanel"
+        aria-labelledby="easy-tab"
+        tabindex="0">
+        <div class="table-wrap">
+          <table id="job-table">
+            <thead>
+              <tr id="column-headings"></tr>
+            </thead>
+            <tbody id="job-table-body"></tbody>
+          </table>
+        </div>
+        <p id="empty-state" class="empty-state" hidden></p>
+      </section>
+      <p id="skipped-count" class="skipped-count">0 skipped (no apply option)</p>
+      <p id="site-run-footer" class="site-run-footer" hidden></p>
+      <p id="feedback" class="feedback" role="status" aria-live="polite"></p>
+    </main>
+    <script src="config.js"></script>
+    <script src="src/core/storage.js"></script>
+    <script src="src/sites/linkedin/selectors.js"></script>
+    <script src="src/sites/linkedin/metadata.js"></script>
+    <script src="src/sites/linkedin/adapter.js"></script>
+    <script src="src/sites/naukri/config.js"></script>
+    <script src="src/sites/naukri/selectors.js"></script>
+    <script src="src/sites/naukri/adapter.js"></script>
+    <script src="src/sites/registry.js"></script>
+    <script src="results.js"></script>
+  </body>
+</html>

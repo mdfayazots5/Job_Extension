@@ -1,0 +1,11 @@
+MULTI-SITE RULES (apply to every task)
+- Sites: linkedin (done, working, MUST NOT REGRESS), naukri (new), indeed (future).
+- Each site = its own adapter in src/sites/<id>/ with its own selectors.js. Shared logic lives only in src/core/. No site-specific strings in core.
+- Site adapters implement matchesUrl, detectBlock, getCurrentPage, collectPage, hasNextPage, goNextPage, normalize, limits, and ui. The shared run loop owns page progression and calls only this adapter contract.
+- manifest content_scripts: one entry per site with its own `matches`; a site's files load ONLY on that site. Naukri host permission: https://www.naukri.com/*.
+- All storage keys are namespaced by site: records `${site}:${jobId}`, runs.<site>, budgets.<site>, cooldown.<site>, opened.<site>.
+- Legacy site data migrations are versioned, retry-safe, verified before completion, and must retain source keys; never remove legacy data during migration.
+- Popup stays Start/Stop only (+ "View results" link). It detects the active tab's site; Start/Stop act on that site only. Unsupported tab -> "Open a LinkedIn or Naukri search results page". Only one run at a time globally.
+- Read-only DOM, never click Apply/Save/anything except the site's own pagination. Never modify URLs or filters. Respect existing safety rules: jittered delays, per-run/day caps, circuit breaker + cooldown, visible-tab only, kill switch.
+- Never use hashed class names (styles_xxx__hash, hv4xxx). Use plain stable classes, ids, data-*, aria-label, href patterns, text.
+- Every change must keep the LinkedIn flow working; add or keep regression checks.
