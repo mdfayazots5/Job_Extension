@@ -119,10 +119,10 @@
           initial[keys.openedJobs] = {};
         }
         if (
-          values[keys.selectedTab] !== "Company Jobs"
-          && values[keys.selectedTab] !== "Consultant Jobs"
+          values[keys.selectedTab] !== "Easy Apply"
+          && values[keys.selectedTab] !== "Company Apply"
         ) {
-          initial[keys.selectedTab] = "Company Jobs";
+          initial[keys.selectedTab] = "Easy Apply";
         }
         if (Object.keys(initial).length) {
           await chrome.storage.local.set(initial);
@@ -159,13 +159,23 @@
   }
 
   async function ensureContentScript(tabId) {
-    if (await pingContentScript(tabId)) {
-      return;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (await pingContentScript(tabId)) {
+        return;
+      }
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
     }
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: CONTENT_FILES
-    });
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: CONTENT_FILES
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not load the Naukri content scripts (${CONTENT_FILES.join(", ")}): ${detail}`);
+    }
     if (!await pingContentScript(tabId)) {
       throw new Error("Could not connect to the Naukri jobs content script. Refresh the page and try again.");
     }
@@ -219,6 +229,36 @@
         event,
         details
       }).filter((entry) => Number.isFinite(Date.parse(entry && entry.at)) && Date.parse(entry.at) >= cutoff).slice(-200)
+    });
+  }
+
+  async function appendFlowDiagnostic(runId, event, details = {}) {
+    const values = await chrome.storage.local.get([keys.flowLogging, keys.diagnostics]);
+    if (values[keys.flowLogging] !== true) {
+      return false;
+    }
+    const prior = Array.isArray(values[keys.diagnostics]) ? values[keys.diagnostics] : [];
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    await chrome.storage.local.set({
+      [keys.diagnostics]: prior.concat({
+        at: new Date().toISOString(),
+        runId,
+        siteId,
+        event,
+        details,
+        flow: true
+      }).filter((entry) => Number.isFinite(Date.parse(entry && entry.at)) && Date.parse(entry.at) >= cutoff).slice(-200)
+    });
+    return true;
+  }
+
+  async function clearFlowDiagnostics() {
+    const values = await chrome.storage.local.get(keys.diagnostics);
+    const diagnostics = Array.isArray(values[keys.diagnostics])
+      ? values[keys.diagnostics]
+      : [];
+    await chrome.storage.local.set({
+      [keys.diagnostics]: diagnostics.filter((entry) => !entry || entry.flow !== true)
     });
   }
 
@@ -281,7 +321,6 @@
     }
     const ended = transition(current, terminalState, {
       ...changes,
-      ...resetRunProgress(),
       navigationPending: false,
       resultsOpening: false
     });
@@ -334,6 +373,12 @@
     const text = message.errorCode === "page_load_failed"
       ? "page_load_failed"
       : String(message.message || "Naukri collection failed.");
+    await appendFlowDiagnostic(current.runId, "run-failure", {
+      errorCode: message.errorCode || "collector_error",
+      message: text,
+      pageNumber: current.pageNumber,
+      navigationPending: Boolean(current.navigationPending)
+    });
     const ended = await finish(current, "ERROR", {
       lastError: text,
       terminalReason: message.errorCode || "collector_error",
@@ -383,6 +428,7 @@
         throw new Error("A Naukri collector run is already active.");
       }
 
+      await clearFlowDiagnostics();
       const runId = crypto.randomUUID();
       const running = transition(current, "RUNNING", {
         runId,
@@ -447,8 +493,12 @@
     if (current.siteId !== siteId || !ACTIVE_STATES.has(current.state)) {
       throw new Error("There is no active Naukri run to stop.");
     }
+    await appendFlowDiagnostic(current.runId, "run-stop-requested", {
+      pageNumber: current.pageNumber,
+      capturedCount: current.capturedCount,
+      navigationPending: Boolean(current.navigationPending)
+    });
     const stopped = transition(current, "STOPPED", {
-      ...resetRunProgress(),
       terminalReason: "user-stop",
       lastError: null,
       navigationPending: false
@@ -499,6 +549,48 @@
         || budget.seenJobIds.includes(record.jobId)
         || current.capturedJobIds.includes(record.jobId)
       ) {
+        const existing = jobs[record.jobId];
+        if (
+          existing
+          && (
+            (
+              typeof record.companyApplyJob === "boolean"
+              && existing.companyApplyJob !== record.companyApplyJob
+            )
+            || (
+              typeof record.questionnaireIdPresent === "boolean"
+              && existing.questionnaireIdPresent !== record.questionnaireIdPresent
+            )
+            || (
+              typeof record.applyRedirectUrl === "string"
+              && existing.applyRedirectUrl !== record.applyRedirectUrl
+            )
+          )
+        ) {
+          const enriched = {
+            ...existing,
+            companyApplyJob: typeof record.companyApplyJob === "boolean"
+              ? record.companyApplyJob
+              : existing.companyApplyJob,
+            questionnaireIdPresent: typeof record.questionnaireIdPresent === "boolean"
+              ? record.questionnaireIdPresent
+              : existing.questionnaireIdPresent,
+            applyType: adapter.ui.tabFor({
+              ...existing,
+              companyApplyJob: typeof record.companyApplyJob === "boolean"
+                ? record.companyApplyJob
+                : existing.companyApplyJob,
+              questionnaireIdPresent: typeof record.questionnaireIdPresent === "boolean"
+                ? record.questionnaireIdPresent
+                : existing.questionnaireIdPresent
+            }),
+            applyRedirectUrl: record.applyRedirectUrl || existing.applyRedirectUrl || null
+          };
+          await global.JobCollectorStorage.setJobs(siteId, {
+            ...jobs,
+            [record.jobId]: enriched
+          });
+        }
         return { ok: true, saved: false };
       }
       if (
@@ -600,6 +692,37 @@
         });
         return { ok: true };
       }
+      case "NAUKRI_SET_FLOW_LOGGING": {
+        if (typeof message.enabled !== "boolean") {
+          throw new Error("Naukri flow logging must be enabled or disabled explicitly.");
+        }
+        if (!message.enabled) {
+          await appendFlowDiagnostic(null, "flow-logging-disabled");
+        }
+        await chrome.storage.local.set({ [keys.flowLogging]: message.enabled });
+        if (message.enabled) {
+          await appendFlowDiagnostic(null, "flow-logging-enabled");
+        }
+        return { ok: true, enabled: message.enabled };
+      }
+      case "NAUKRI_FLOW_LOG": {
+        const current = await getState();
+        if (
+          current.runId !== message.runId
+          || !ACTIVE_STATES.has(current.state)
+          || !sender.tab
+          || sender.tab.id !== current.tabId
+          || typeof message.event !== "string"
+          || !/^[a-z0-9-]{1,60}$/.test(message.event)
+          || !message.details
+          || typeof message.details !== "object"
+          || Array.isArray(message.details)
+        ) {
+          throw new Error("The Naukri flow log does not match the active tab and run.");
+        }
+        await appendFlowDiagnostic(message.runId, message.event, message.details);
+        return { ok: true };
+      }
       case "NAUKRI_PREPARE_NAVIGATION": {
         const current = await getState();
         if (
@@ -623,6 +746,11 @@
           navigationPending: true
         });
         await chrome.storage.local.set({ [keys.runState]: updated });
+        await appendFlowDiagnostic(current.runId, "navigation-prepared", {
+          fromPage: current.pageNumber,
+          toPage: message.pageNumber,
+          urlPath: new URL(updated.searchUrl).pathname
+        });
         await chrome.alarms.create(NAVIGATION_ALARM_PREFIX + current.runId, {
           when: Date.now() + config.navigationTimeoutMs
         });
@@ -656,6 +784,10 @@
         });
         await chrome.storage.local.set({ [keys.runState]: next });
         await chrome.alarms.clear(NAVIGATION_ALARM_PREFIX + current.runId);
+        await appendFlowDiagnostic(current.runId, "navigation-resumed", {
+          pageNumber: next.pageNumber,
+          urlPath: new URL(message.href).pathname
+        });
         return { ok: true, resume: true, runState: next };
       }
       case "NAUKRI_RUN_FINISHED": {
@@ -708,6 +840,12 @@
         && state.state === "RUNNING"
         && state.navigationPending
       ) {
+        await appendFlowDiagnostic(state.runId, "background-navigation-timeout", {
+          pageNumber: state.pageNumber,
+          currentPage: state.currentPage,
+          navigationPending: state.navigationPending,
+          tabId: state.tabId
+        });
         await finishFailure({
           runId: state.runId,
           errorCode: "page_load_failed",

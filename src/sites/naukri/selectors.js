@@ -2,23 +2,95 @@
 
 (function initializeNaukriSelectors(global) {
   const SELECTORS = Object.freeze({
-    cards: ".srp-jobtuple-wrapper[data-job-id]",
-    title: "a.title",
-    company: ".comp-name",
-    postedBy: ".client-company-name",
-    logo: "img.logoImage",
-    experience: ".exp-wrap span",
-    salary: ".sal-wrap span",
-    location: ".loc-wrap span",
-    skills: ".tags-gt li",
-    walkIn: ".ttc__walk-in",
-    walkInDates: ".walkDateWdth",
-    postedText: ".job-post-day",
+    cards: [
+      ".srp-jobtuple-wrapper[data-job-id]",
+      ".jobTuple[data-job-id]",
+      ".jobTupleWrapper[data-job-id]",
+      ".jobtuple-wrapper[data-job-id]",
+      ".job-card[data-job-id]",
+      "[data-job-id].jobTuple",
+      "[data-job-id].job-card",
+      "[data-job-id].jobTupleWrapper"
+    ],
+    title: [
+      "a.title",
+      "a[href*='/job-listings']",
+      ".jobTuple-title a",
+      ".jobTitle a",
+      ".job-title a",
+      "h2 a",
+      "a[href*='job-listings']"
+    ],
+    company: [
+      ".comp-name",
+      ".companyName",
+      ".company-name",
+      ".org-name",
+      ".jobTupleCompanyName",
+      ".company-name a"
+    ],
+    postedBy: [
+      ".client-company-name",
+      ".postedBy",
+      ".clientName",
+      ".posted-by"
+    ],
+    logo: [
+      "img.logoImage",
+      "img.companyLogo",
+      ".logo img",
+      "img[src]"
+    ],
+    experience: [
+      ".exp-wrap span",
+      ".experience",
+      ".jobExperience",
+      ".exp .value",
+      ".experience span"
+    ],
+    salary: [
+      ".sal-wrap span",
+      ".salary",
+      ".salaryRange",
+      ".salary span",
+      ".salaryRange span"
+    ],
+    location: [
+      ".loc-wrap span",
+      ".location",
+      ".jobLoc",
+      ".job-location",
+      ".location span"
+    ],
+    skills: [
+      ".tags-gt li",
+      ".keySkills li",
+      ".skills li",
+      ".skill-item",
+      ".job-skill"
+    ],
+    walkIn: [
+      ".ttc__walk-in",
+      ".walkIn",
+      ".walk-in"
+    ],
+    walkInDates: [
+      ".walkDateWdth",
+      ".walkInDates",
+      ".walk-in-dates"
+    ],
+    postedText: [
+      ".job-post-day",
+      ".postedDate",
+      ".posted-date",
+      ".job-posted"
+    ],
     pagination: "#lastCompMark",
     paginationLinks: "#lastCompMark a, #lastCompMark button, [aria-label], [title], [rel='next']",
     selectedPage: "#lastCompMark a.selected, [aria-current='page']",
     excludedContainers: [
       ".naukri-wdgt-section",
+      ".naukri-widget",
       "[class*='urgent-hiring']",
       "[class*='similar-jobs']",
       "[class*='feedback']",
@@ -26,16 +98,37 @@
     ].join(", ")
   });
 
+  function normalizeSelectorList(selector) {
+    const items = Array.isArray(selector) ? selector : [selector];
+    return items
+      .filter(Boolean)
+      .flatMap((item) => String(item).split(","))
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
   function query(root, selector) {
-    return root && typeof root.querySelector === "function"
-      ? root.querySelector(selector)
-      : null;
+    if (!root || typeof root.querySelector !== "function") {
+      return null;
+    }
+    for (const item of normalizeSelectorList(selector)) {
+      const match = root.querySelector(item);
+      if (match) {
+        return match;
+      }
+    }
+    return null;
   }
 
   function queryAll(root, selector) {
-    return root && typeof root.querySelectorAll === "function"
-      ? Array.from(root.querySelectorAll(selector))
-      : [];
+    if (!root || typeof root.querySelectorAll !== "function") {
+      return [];
+    }
+    const matches = [];
+    for (const item of normalizeSelectorList(selector)) {
+      matches.push(...Array.from(root.querySelectorAll(item)));
+    }
+    return Array.from(new Set(matches));
   }
 
   function text(element) {
@@ -50,7 +143,16 @@
       const value = candidate.getAttribute(attribute);
       return typeof value === "string" && value.trim();
     });
-    return element ? element.getAttribute(attribute).trim() : "";
+    if (element) {
+      const value = element.getAttribute(attribute);
+      return typeof value === "string" ? value.trim() : "";
+    }
+    const fallback = query(root, selector);
+    if (fallback) {
+      const value = fallback.getAttribute(attribute);
+      return typeof value === "string" ? value.trim() : "";
+    }
+    return "";
   }
 
   function getLocationRaw(card) {

@@ -12,6 +12,8 @@
   let activeRunId = null;
   let stopRequested = false;
   let navigationTimer = null;
+  let navigationMonitor = null;
+  let spaResumeInProgress = false;
   let resumeStarted = false;
 
   class NaukriBlockError extends Error {
@@ -63,6 +65,28 @@
     return response;
   }
 
+  async function logFlow(runId, event, details = {}) {
+    try {
+      const values = await chrome.storage.local.get("debug.naukri");
+      if (values["debug.naukri"] !== true) {
+        return;
+      }
+      await send({
+        type: "NAUKRI_FLOW_LOG",
+        runId,
+        event,
+        details: {
+          ...details,
+          urlPath: currentUrl().pathname,
+          readyState: document.readyState,
+          visibility: document.visibilityState
+        }
+      });
+    } catch (error) {
+      console.warn("[Naukri Jobs Collector] Could not persist flow log", event, error);
+    }
+  }
+
   async function checkRunning(runId) {
     if (stopRequested || activeRunId !== runId) {
       throw new NaukriStopError();
@@ -89,6 +113,20 @@
     await checkRunning(runId);
   }
 
+  async function waitVisibleDelay(runId, milliseconds) {
+    let remaining = milliseconds;
+    while (remaining > 0) {
+      await waitUntilVisible(runId);
+      const duration = Math.min(250, remaining);
+      const startedAt = Date.now();
+      await wait(duration);
+      if (document.visibilityState === "visible") {
+        remaining = Math.max(0, remaining - (Date.now() - startedAt));
+      }
+      await checkRunning(runId);
+    }
+  }
+
   async function scrollResults(runId) {
     await waitUntilVisible(runId);
     const stepCount = randomDelay(config.scrollSteps);
@@ -100,7 +138,7 @@
         ? -randomDelay(config.upwardScrollAmount)
         : randomDelay(config.scrollAmount);
       window.scrollBy({ top: amount, behavior: "smooth" });
-      await wait(randomDelay(config.scrollDelayMs));
+      await waitVisibleDelay(runId, randomDelay(config.scrollDelayMs));
     }
   }
 
@@ -132,6 +170,73 @@
     return { capturedCount: Number(state.capturedCount) || 0 };
   }
 
+  async function readApplicationDetails(runId, pageNumber, records) {
+    const applicationDetails = {};
+    const missingRecords = [];
+    for (const record of records) {
+      if (typeof record.companyApplyJob === "boolean") {
+        applicationDetails[record.jobId] = {
+          companyApplyJob: record.companyApplyJob,
+          questionnaireIdPresent: record.questionnaireIdPresent,
+          applyRedirectUrl: record.applyRedirectUrl
+        };
+      } else {
+        missingRecords.push(record);
+      }
+    }
+    const observedResponse = globalThis.JobCollectorNaukriApiResponses
+      && globalThis.JobCollectorNaukriApiResponses[pageNumber];
+    if (!observedResponse) {
+      if (!missingRecords.length) {
+        await logFlow(runId, "application-api-matched", {
+          pageNumber,
+          matchedCount: records.length,
+          source: "result-cards"
+        });
+        return applicationDetails;
+      }
+      throw new Error(
+        `Could not capture Naukri's page-loaded search response for page ${pageNumber}. ` +
+        "Reload the search page and try again."
+      );
+    }
+    await logFlow(runId, "application-api-response", {
+      pageNumber,
+      status: observedResponse.status
+    });
+    if (observedResponse.status === 406) {
+      if (!missingRecords.length) {
+        await logFlow(runId, "application-api-matched", {
+          pageNumber,
+          matchedCount: records.length,
+          source: "result-cards"
+        });
+        return applicationDetails;
+      }
+      throw new Error(
+        "Naukri requires reCAPTCHA verification for its search results. " +
+        "Complete the verification on the Naukri page, reload it, and start a new run."
+      );
+    }
+    if (observedResponse.status < 200 || observedResponse.status >= 300) {
+      throw new Error(
+        `Naukri's page-loaded search request returned HTTP ${observedResponse.status} for page ${pageNumber}.`
+      );
+    }
+    Object.assign(applicationDetails, adapter.parseApplicationDetails(observedResponse));
+    const missingIds = missingRecords
+      .map((record) => record.jobId)
+      .filter((jobId) => !Object.prototype.hasOwnProperty.call(applicationDetails, jobId));
+    if (missingIds.length) {
+      throw new Error(`Naukri search API did not return application type for ${missingIds.length} visible job${missingIds.length === 1 ? "" : "s"} on page ${pageNumber}.`);
+    }
+    await logFlow(runId, "application-api-matched", {
+      pageNumber,
+      matchedCount: records.length
+    });
+    return applicationDetails;
+  }
+
   async function reportFailure(runId, error) {
     try {
       await send({
@@ -155,12 +260,18 @@
       ? runState.pageNumber
       : 1;
     const pageUrl = currentUrl();
+    await logFlow(runId, "page-run-start", {
+      pageNumber,
+      cardCount: selectors.getJobCards(document).length,
+      navigationPending: Boolean(runState.navigationPending)
+    });
 
     const context = {
       doc: document,
       url: pageUrl,
       runId,
       pageNumber,
+      logFlow: (event, details) => logFlow(runId, event, details),
       setPage() {},
       setNextPage() {},
       async ensureVisible() {
@@ -177,6 +288,10 @@
       },
       async collectPageWork(currentRunId, currentPage) {
         await verifyCards(currentRunId);
+        await logFlow(currentRunId, "cards-found", {
+          pageNumber: currentPage,
+          cardCount: selectors.getJobCards(document).length
+        });
         await scrollResults(currentRunId);
         await checkRunning(currentRunId);
         const parsed = adapter.parsePage({
@@ -186,6 +301,11 @@
             debugLog("Card parsing failed", detail.selector, detail.jobId, detail.message);
           }
         });
+        const applicationDetails = await readApplicationDetails(
+          currentRunId,
+          currentPage,
+          parsed
+        );
         const currentIds = new Set();
         for (const record of parsed) {
           await checkRunning(currentRunId);
@@ -193,26 +313,45 @@
             continue;
           }
           currentIds.add(record.jobId);
+          const details = applicationDetails[record.jobId];
           await send({
             type: "SAVE_CAPTURE",
             runId: currentRunId,
             siteId: adapter.id,
-            record: { ...adapter.normalize(record), pageNumber: currentPage }
+            record: {
+              ...adapter.normalize({
+                ...record,
+                companyApplyJob: details.companyApplyJob,
+                questionnaireIdPresent: details.questionnaireIdPresent,
+                applyRedirectUrl: details.applyRedirectUrl,
+                pageNumber: currentPage
+              })
+            }
           });
         }
+        await logFlow(currentRunId, "page-captured", {
+          pageNumber: currentPage,
+          parsedCount: parsed.length,
+          uniqueCount: currentIds.size,
+          storedCount: (await readStats(currentRunId)).capturedCount
+        });
         return readStats(currentRunId);
       },
       async beforeNextPage(currentPage) {
         const microPauseInterval = runState.microPauseEveryPages
           || config.microPauseEveryPages.min;
         if (currentPage % microPauseInterval === 0) {
-          await wait(randomDelay(config.microPauseMs));
-          await checkRunning(runId);
+          await waitVisibleDelay(runId, randomDelay(config.microPauseMs));
         }
-        await wait(randomDelay(config.pageChangeDelayMs));
-        await checkRunning(runId);
+        await waitVisibleDelay(runId, randomDelay(config.pageChangeDelayMs));
       },
       async prepareNavigation(nextPage) {
+        await waitUntilVisible(runId);
+        await logFlow(runId, "navigation-preparing", {
+          pageNumber: adapter.getCurrentPage(document, currentUrl()),
+          nextPage,
+          hasNextPage: adapter.hasNextPage(document)
+        });
         await send({
           type: "NAUKRI_PREPARE_NAVIGATION",
           runId,
@@ -222,9 +361,57 @@
         });
         if (navigationTimer !== null) {
           clearTimeout(navigationTimer);
+          navigationTimer = null;
         }
+        if (navigationMonitor !== null) {
+          clearInterval(navigationMonitor);
+          navigationMonitor = null;
+        }
+
+        const startedUrl = currentUrl().href;
+        const clearNavigationWatch = () => {
+          if (navigationTimer !== null) {
+            clearTimeout(navigationTimer);
+            navigationTimer = null;
+          }
+          if (navigationMonitor !== null) {
+            clearInterval(navigationMonitor);
+            navigationMonitor = null;
+          }
+        };
+
+        const pageAdvancedEnough = () => {
+          const currentPageNumber = adapter.getCurrentPage(document, currentUrl());
+          return Number.isInteger(currentPageNumber) && currentPageNumber >= nextPage;
+        };
+
+        navigationMonitor = setInterval(() => {
+          if (!pageAdvancedEnough()) {
+            return;
+          }
+          if (!spaResumeInProgress && activeRunId !== runId) {
+            spaResumeInProgress = true;
+            clearNavigationWatch();
+            void logFlow(runId, "same-document-page-advance", {
+              expectedPage: nextPage,
+              detectedPage: adapter.getCurrentPage(document, currentUrl()),
+              urlChanged: currentUrl().href !== startedUrl
+            }).then(() => resumeSavedRun({ force: true })).catch((error) => {
+              debugLog("Could not resume Naukri after same-document pagination", error);
+            }).finally(() => {
+              spaResumeInProgress = false;
+            });
+          }
+        }, 1000);
+
         navigationTimer = setTimeout(() => {
-          if (!stopRequested) {
+          if (!stopRequested && !pageAdvancedEnough()) {
+            void logFlow(runId, "content-navigation-timeout", {
+              expectedPage: nextPage,
+              detectedPage: adapter.getCurrentPage(document, currentUrl()),
+              startedUrlPath: new URL(startedUrl).pathname
+            });
+            clearNavigationWatch();
             void send({
               type: "NAUKRI_RUN_FAILED",
               runId,
@@ -233,14 +420,20 @@
             }).catch((error) => debugLog("Could not report page-load timeout", error));
           }
         }, config.navigationTimeoutMs);
-        window.addEventListener("pagehide", () => {
-          if (navigationTimer !== null) {
-            clearTimeout(navigationTimer);
-            navigationTimer = null;
-          }
-        }, { once: true });
+
+        const clearOnEvent = () => {
+          clearNavigationWatch();
+        };
+        window.addEventListener("pagehide", clearOnEvent, { once: true });
+        window.addEventListener("pageshow", clearOnEvent, { once: true });
+        window.addEventListener("load", clearOnEvent, { once: true });
       },
       async writeProgress(currentPage, stats, phase) {
+        await logFlow(runId, "progress", {
+          pageNumber: currentPage,
+          capturedCount: stats.capturedCount,
+          phase
+        });
         await send({
           type: "NAUKRI_PROGRESS",
           runId,
@@ -250,6 +443,11 @@
         });
       },
       async finish(currentPage, stats, message) {
+        await logFlow(runId, "run-finished", {
+          pageNumber: currentPage,
+          capturedCount: stats.capturedCount,
+          message
+        });
         await send({
           type: "NAUKRI_RUN_FINISHED",
           runId,
@@ -273,6 +471,11 @@
         clearTimeout(navigationTimer);
         navigationTimer = null;
       }
+      if (navigationMonitor !== null) {
+        clearInterval(navigationMonitor);
+        navigationMonitor = null;
+      }
+      spaResumeInProgress = false;
       if (activeRunId === runId) {
         activeRunId = null;
       }
@@ -296,6 +499,10 @@
         resumeStarted = false;
         return;
       }
+      await logFlow(response.runState.runId, "navigation-resumed", {
+        pageNumber: response.runState.pageNumber,
+        navigationPending: response.runState.navigationPending
+      });
       activeRunId = response.runState.runId;
       stopRequested = false;
       await wait(randomDelay(config.resumeDelayMs));
@@ -322,9 +529,13 @@
       return false;
     }
     if (message.type === "PING") {
+      const connected = message.siteId === adapter.id;
       sendResponse({
-        ok: message.siteId === adapter.id && hasResultsPage(),
-        error: hasResultsPage() ? undefined : "Open a Naukri search results page to start."
+        ok: connected,
+        ready: connected && hasResultsPage(),
+        error: connected && !hasResultsPage()
+          ? "Open a Naukri search results page to start."
+          : undefined
       });
       return false;
     }

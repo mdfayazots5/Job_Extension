@@ -64,6 +64,21 @@
     }
   }
 
+  function cleanApplyRedirectUrl(value) {
+    if (typeof value !== "string" || !value.trim()) {
+      return null;
+    }
+    try {
+      const url = new URL(value.trim(), "https://www.naukri.com");
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return null;
+      }
+      return url.href;
+    } catch (_error) {
+      return null;
+    }
+  }
+
   function cleanLogoSource(src) {
     const value = String(src || "").trim();
     if (!value || /^data:/i.test(value)) {
@@ -133,7 +148,14 @@
       postedDateEstimate: posted.date,
       postedApprox: posted.approximate,
       postedType: "Posted",
-      applyType: "Naukri"
+      applyType: "Naukri",
+      companyApplyJob: typeof card.getAttribute("data-company-apply-job") === "string"
+        ? card.getAttribute("data-company-apply-job") === "true"
+        : null,
+      questionnaireIdPresent: typeof card.getAttribute("data-questionnaire-id-present") === "string"
+        ? card.getAttribute("data-questionnaire-id-present") === "true"
+        : null,
+      applyRedirectUrl: null
     };
   }
 
@@ -165,6 +187,36 @@
       throw new Error("Naukri page collection is not connected to the core runtime.");
     }
     return ctx.collectPageWork(ctx.runId, ctx.pageNumber);
+  }
+
+  function parseApplicationDetails(payload) {
+    if (!payload || typeof payload !== "object" || !Array.isArray(payload.jobDetails)) {
+      throw new Error("Naukri search API response does not contain a jobDetails list.");
+    }
+    const applicationTypes = {};
+    for (const job of payload.jobDetails) {
+      if (!job || typeof job !== "object" || job.jobId === undefined || job.jobId === null) {
+        continue;
+      }
+      const jobId = String(job.jobId).trim();
+      if (!/^\d+$/.test(jobId)) {
+        continue;
+      }
+      if (typeof job.companyApplyJob !== "boolean") {
+        throw new Error(`Naukri API response is missing the companyApplyJob flag for job ${jobId}.`);
+      }
+      applicationTypes[jobId] = {
+        companyApplyJob: job.companyApplyJob,
+        questionnaireIdPresent: typeof job.questionnaireIdPresent === "boolean"
+          ? job.questionnaireIdPresent
+          : null,
+        applyRedirectUrl: cleanApplyRedirectUrl(job.applyRedirectUrl)
+      };
+    }
+    if (Object.keys(applicationTypes).length === 0) {
+      throw new Error("Naukri search API response contains no classifiable job records.");
+    }
+    return applicationTypes;
   }
 
   function detectBlock(doc, url) {
@@ -206,7 +258,21 @@
       throw new Error("Naukri pagination requires persisted navigation state.");
     }
     await ctx.prepareNavigation(ctx.pageNumber + 1);
+    if (typeof ctx.logFlow === "function") {
+      await ctx.logFlow("pagination-click", {
+        pageNumber: ctx.pageNumber,
+        nextPage: ctx.pageNumber + 1,
+        controlText: selectors.text(next),
+        targetPath: new URL(next.getAttribute("href") || ctx.url.href, ctx.url).pathname
+      });
+    }
     next.click();
+    if (typeof ctx.logFlow === "function") {
+      await ctx.logFlow("pagination-clicked", {
+        pageNumber: ctx.pageNumber,
+        nextPage: ctx.pageNumber + 1
+      });
+    }
     return "navigated";
   }
 
@@ -218,7 +284,18 @@
     if (!jobId) {
       throw new Error("Naukri returned a job record without an ID.");
     }
-    return { ...raw, siteId: "naukri", jobId };
+    const normalized = { ...raw, siteId: "naukri", jobId };
+    normalized.applyRedirectUrl = cleanApplyRedirectUrl(raw.applyRedirectUrl);
+    if (normalized.companyApplyJob === true) {
+      normalized.applyType = "Company Apply";
+    } else if (normalized.questionnaireIdPresent === false) {
+      normalized.applyType = "Direct Apply";
+    } else if (normalized.questionnaireIdPresent === true) {
+      normalized.applyType = "Easy Apply";
+    } else if (typeof normalized.companyApplyJob === "boolean") {
+      normalized.applyType = "Easy Apply";
+    }
+    return normalized;
   }
 
   global.JobCollectorNaukriAdapter = Object.freeze({
@@ -244,6 +321,7 @@
       return goNextPage(ctx);
     },
     normalize,
+    parseApplicationDetails,
     parsePostedDate,
     limits: Object.freeze({
       maxPages: config.maxPages,
@@ -252,8 +330,9 @@
     }),
     ui: Object.freeze({
       tabs: Object.freeze([
-        Object.freeze({ id: "Company Jobs", label: "Company Jobs" }),
-        Object.freeze({ id: "Consultant Jobs", label: "Consultant Jobs" })
+        Object.freeze({ id: "Easy Apply", label: "Easy Apply" }),
+        Object.freeze({ id: "Direct Apply", label: "Direct Apply" }),
+        Object.freeze({ id: "Company Apply", label: "Company Apply" })
       ]),
       columns: Object.freeze([
         Object.freeze({ id: "number", label: "#" }),
@@ -266,11 +345,23 @@
         Object.freeze({ id: "apply", label: "Apply" })
       ]),
       applyUrl(record) {
+        if (
+          record.companyApplyJob === true
+          || record.applyType === "Company Apply"
+        ) {
+          return cleanApplyRedirectUrl(record.applyRedirectUrl) || record.url;
+        }
         return record.url;
       },
       accent: "#275DF5",
       tabFor(record) {
-        return record.postedBy ? "Consultant Jobs" : "Company Jobs";
+        if (record.companyApplyJob === true || record.applyType === "Company Apply") {
+          return "Company Apply";
+        }
+        if (typeof record.questionnaireIdPresent === "boolean") {
+          return record.questionnaireIdPresent ? "Easy Apply" : "Direct Apply";
+        }
+        return record.applyType === "Direct Apply" ? "Direct Apply" : "Easy Apply";
       }
     })
   });

@@ -15,6 +15,7 @@
       selectedTab: `ui.${siteId}.selectedTab`,
       progress: `progress.${siteId}`,
       diagnostics: `diagnostics.${siteId}`,
+      flowLogging: `debug.${siteId}`,
       killSwitch: `killswitch.${siteId}`,
       notice: `notices.${siteId}`,
       budget: `budgets.${siteId}`,
