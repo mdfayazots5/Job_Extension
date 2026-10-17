@@ -123,8 +123,10 @@ function createPage(storage, search = "") {
     "company-tab",
     "linkedin-site",
     "naukri-site",
+    "indeed-site",
     "linkedin-site-count",
     "naukri-site-count",
+    "indeed-site-count",
     "site-switcher",
     "results-panel",
     "column-headings",
@@ -134,6 +136,10 @@ function createPage(storage, search = "") {
     "search-label",
     "applicant-review-filter",
     "hide-opened",
+    "hide-visited",
+    "hide-visited-control",
+    "hide-sponsored",
+    "hide-sponsored-control",
     "role-sort",
     "company-sort",
     "posted-sort",
@@ -142,11 +148,15 @@ function createPage(storage, search = "") {
     "posted-header",
     "run-subtitle",
     "site-run-footer",
+    "indeed-skipped-footer",
+    "dates-footer",
+    "parse-warning-footer",
     "total-count",
     "skipped-count",
     "feedback"
   ];
   const elements = new Map(ids.map((id) => [id, new FakeElement("div", id)]));
+  elements.get("hide-sponsored").checked = new URLSearchParams(search).get("site") === "indeed";
   const storageListeners = [];
   const downloadedFiles = [];
   const blobsByUrl = new Map();
@@ -242,6 +252,10 @@ function createPage(storage, search = "") {
     "src/sites/naukri/config.js",
     "src/sites/naukri/selectors.js",
     "src/sites/naukri/adapter.js",
+    "src/sites/indeed/config.js",
+    "src/sites/indeed/selectors.js",
+    "src/sites/indeed/parse.js",
+    "src/sites/indeed/adapter.js",
     "src/sites/registry.js"
   ]) {
     vm.runInContext(
@@ -612,7 +626,296 @@ async function run() {
   assert.equal(emptyPage.elements.get("total-count").textContent, "0 jobs");
   assert.ok(emptyPage.elements.get("linkedin-site").className.includes("is-empty"));
   assert.ok(emptyPage.elements.get("naukri-site").className.includes("is-empty"));
+  assert.ok(emptyPage.elements.get("indeed-site").className.includes("is-empty"));
   assert.match(emptyPage.elements.get("empty-state").textContent, /No Easy Apply jobs captured/);
+
+  const indeedPage = createPage({
+    records: {
+      "indeed:0123456789abcdef": {
+        siteId: "indeed",
+        jobId: "0123456789abcdef",
+        title: "Indeed Role",
+        company: "Indeed Company",
+        location: "Remote",
+        url: "https://in.indeed.com/viewjob?jk=0123456789abcdef",
+        applyType: "Easy Apply",
+        postedText: "5 days ago",
+        capturedAt: "2026-10-17T12:00:00.000Z",
+        visited: true
+      },
+      "indeed:8123456789abcdef": {
+        siteId: "indeed",
+        jobId: "8123456789abcdef",
+        title: "Sponsored Indeed Role",
+        company: "Sponsored Indeed Co",
+        location: "Austin",
+        url: "https://in.indeed.com/viewjob?jk=8123456789abcdef",
+        applyType: "Company Site",
+        sponsored: true,
+        postedType: "Unknown",
+        postedText: null,
+        postedDateEstimate: null
+      },
+      "linkedin:101": job("101", "Easy Apply"),
+      "naukri:021026012531": naukriPrimary
+    },
+    "runs.indeed": {
+      siteId: "indeed",
+      state: "DONE",
+      capturedCount: 1,
+      skippedAppliedCount: 2,
+      skippedExpiredCount: 3
+    },
+    "opened.indeed": {},
+    "opened.linkedin": { "101": true },
+    "opened.naukri": { "021026012531": true }
+  }, "?site=indeed");
+  const otherSiteRecordsBeforeIndeedAction = JSON.stringify({
+    linkedin: indeedPage.storage.records["linkedin:101"],
+    naukri: indeedPage.storage.records["naukri:021026012531"]
+  });
+  await settle();
+  assert.equal(indeedPage.elements.get("indeed-site").getAttribute("aria-pressed"), "true");
+  assert.equal(indeedPage.elements.get("indeed-site-count").textContent, "2");
+  assert.equal(indeedPage.elements.get("easy-tab").textContent, "Easy Apply (1)");
+  assert.equal(indeedPage.elements.get("company-tab").textContent, "Company Apply (0)");
+  assert.equal(indeedPage.elements.get("hide-sponsored").checked, true);
+  assert.equal(indeedPage.elements.get("parse-warning-footer").textContent, "1 sponsored hidden");
+  assert.equal(
+    indeedPage.elements.get("dates-footer").textContent,
+    "Dates: 1 from list data, 1 sponsored (no date), 0 unavailable"
+  );
+  assert.equal(indeedPage.elements.get("job-table-body").children.length, 1);
+  assert.deepEqual(
+    indeedPage.elements.get("column-headings").children.map((heading) => heading.textContent),
+    ["#", "Role", "Company", "Location", "Salary", "Type", "Posted↓", "Apply"]
+  );
+  assert.equal(indeedPage.elements.get("company-tab").hidden, false);
+  assert.equal(indeedPage.elements.get("parse-warning-footer").hidden, false);
+  assert.equal(indeedPage.elements.get("hide-visited-control").hidden, false);
+  assert.equal(indeedPage.elements.get("hide-visited").checked, false);
+  assert.equal(indeedPage.elements.get("indeed-skipped-footer").textContent, "Skipped: 2 applied, 3 expired");
+  indeedPage.elements.get("hide-sponsored").checked = false;
+  await indeedPage.elements.get("hide-sponsored").dispatch("change");
+  assert.equal(indeedPage.elements.get("company-tab").textContent, "Company Apply (1)");
+  assert.equal(indeedPage.elements.get("parse-warning-footer").textContent, "");
+  await indeedPage.elements.get("company-tab").dispatch("click");
+  let sponsoredRows = indeedPage.elements.get("job-table-body").children;
+  assert.equal(sponsoredRows.length, 1);
+  assert.equal(findAll(sponsoredRows[0], (item) => item.className === "posted-relative")[0].textContent, "No date (sponsored)");
+  assert.equal(findAll(sponsoredRows[0], (item) => item.className.includes("sponsored-chip"))[0].textContent, "Sponsored");
+  indeedPage.elements.get("hide-sponsored").checked = true;
+  await indeedPage.elements.get("hide-sponsored").dispatch("change");
+  assert.equal(indeedPage.elements.get("company-tab").textContent, "Company Apply (0)");
+  await indeedPage.elements.get("easy-tab").dispatch("click");
+  assert.ok(indeedPage.elements.get("naukri-site").className.includes("is-empty") === false);
+  let indeedRows = indeedPage.elements.get("job-table-body").children;
+  const indeedRow = indeedRows[0];
+  assert.equal(findAll(indeedRow, (item) => item.className.includes("visited-chip"))[0].textContent, "Visited");
+  indeedPage.elements.get("hide-visited").checked = true;
+  await indeedPage.elements.get("hide-visited").dispatch("change");
+  assert.equal(indeedPage.elements.get("job-table-body").children.length, 0);
+  indeedPage.elements.get("hide-visited").checked = false;
+  await indeedPage.elements.get("hide-visited").dispatch("change");
+  indeedRows = indeedPage.elements.get("job-table-body").children;
+  assert.equal(findAll(indeedRow, (item) => item.className === "salary-cell")[0].textContent, "—");
+  assert.equal(findAll(indeedRow, (item) => item.className === "type-cell")[0].textContent, "—");
+  const indeedApply = findAll(indeedRow, (item) => item.className === "apply-link")[0];
+  assert.equal(indeedApply.href, "https://in.indeed.com/viewjob?jk=0123456789abcdef");
+  assert.equal(indeedApply.target, "_blank");
+  assert.equal(indeedApply.rel, "noopener noreferrer");
+  await indeedApply.dispatch("click");
+  await settle();
+  assert.equal(indeedPage.storage["opened.indeed"]["0123456789abcdef"], true);
+  assert.equal(indeedPage.storage["opened.linkedin"]["101"], true);
+  assert.equal(indeedPage.storage["opened.naukri"]["021026012531"], true);
+  const indeedReloadedPage = createPage(indeedPage.storage, "?site=indeed");
+  await settle();
+  assert.ok(indeedReloadedPage.elements.get("job-table-body").children[0].className.includes("is-opened"));
+  indeedRows = indeedPage.elements.get("job-table-body").children;
+  const indeedUndo = findAll(indeedRows[0], (item) => item.textContent === "undo")[0];
+  await indeedUndo.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+  await settle();
+  assert.equal(indeedPage.storage["opened.indeed"]["0123456789abcdef"], undefined);
+  assert.equal(indeedPage.storage["opened.linkedin"]["101"], true);
+  assert.equal(indeedPage.storage["opened.naukri"]["021026012531"], true);
+  assert.equal(JSON.stringify({
+    linkedin: indeedPage.storage.records["linkedin:101"],
+    naukri: indeedPage.storage.records["naukri:021026012531"]
+  }), otherSiteRecordsBeforeIndeedAction);
+
+  const indeedCompanyRecord = {
+    siteId: "indeed",
+    jobId: "1123456789abcdef",
+    title: "Older Role",
+    company: "Indeed Company Two",
+    location: "Remote",
+    workMode: "Remote",
+    salary: "₹50,000 - ₹1,00,000 a month",
+    jobType: "Full-time",
+    sponsored: false,
+    urgentlyHiring: true,
+    postedText: "30+ days ago",
+    postedApprox: true,
+    postedDateEstimate: "2026-09-01T00:00:00.000Z",
+    parseWarning: "Indeed JSON unavailable",
+    url: "https://in.indeed.com/viewjob?jk=1123456789abcdef",
+    applyType: "Company Site"
+  };
+  const indeedSecondCompanyRecord = {
+    ...indeedCompanyRecord,
+    jobId: "2123456789abcdef",
+    title: "Austin Role",
+    company: "Indeed Company Three",
+    location: "Austin",
+    workMode: null,
+    salary: "$80,000 a year",
+    jobType: "Contract",
+    sponsored: false,
+    urgentlyHiring: false,
+    postedText: "2 days ago",
+    postedApprox: false,
+    postedDateEstimate: "2026-10-15T00:00:00.000Z",
+    postedText: null,
+    parseWarning: null,
+    url: "https://in.indeed.com/viewjob?jk=2123456789abcdef"
+  };
+  await indeedPage.updateStorage("records", {
+    ...indeedPage.storage.records,
+    "indeed:1123456789abcdef": indeedCompanyRecord,
+    "indeed:2123456789abcdef": indeedSecondCompanyRecord
+  });
+  assert.equal(indeedPage.elements.get("indeed-site-count").textContent, "4");
+  assert.equal(indeedPage.elements.get("parse-warning-footer").hidden, false);
+  assert.equal(indeedPage.elements.get("parse-warning-footer").textContent, "1 sponsored hidden");
+  await indeedPage.elements.get("company-tab").dispatch("click");
+  assert.equal(indeedPage.elements.get("company-tab").textContent, "Company Apply (2)");
+  indeedRows = indeedPage.elements.get("job-table-body").children;
+  const indeedCompanyRow = indeedRows.find((row) => (
+    findAll(row, (item) => item.className === "role-title")[0].textContent === "Older Role"
+  ));
+  assert.equal(findAll(indeedCompanyRow, (item) => item.className === "location-text")[0].textContent, "Remote");
+  assert.equal(findAll(indeedCompanyRow, (item) => item.className === "work-mode-chip")[0].textContent, "Remote");
+  assert.equal(findAll(indeedCompanyRow, (item) => item.className === "salary-cell")[0].textContent, "₹50,000 - ₹1,00,000 a month");
+  assert.equal(findAll(indeedCompanyRow, (item) => item.className === "type-cell")[0].textContent, "Full-time");
+  assert.equal(findAll(indeedCompanyRow, (item) => item.className.includes("hiring-chip"))[0].textContent, "Urgently hiring");
+  assert.equal(findAll(indeedCompanyRow, (item) => item.className === "posted-relative")[0].textContent, "30+ days");
+  const indeedCompanyApply = findAll(indeedCompanyRow, (item) => item.className === "apply-link")[0];
+  assert.equal(indeedCompanyApply.href, indeedCompanyRecord.url);
+  assert.equal(indeedCompanyApply.target, "_blank");
+  assert.equal(indeedCompanyApply.rel, "noopener noreferrer");
+  const indeedApproxDate = findAll(indeedCompanyRow, (item) => item.className === "posted-relative")[0];
+  assert.equal(indeedApproxDate.textContent, "30+ days");
+  assert.match(indeedApproxDate.attributes.title, /exact date is unavailable/);
+  assert.equal(findAll(indeedCompanyRow, (item) => item.className === "absolute-date").length, 0);
+  await indeedPage.elements.get("location-sort").dispatch("click");
+  assert.equal(indeedPage.elements.get("location-header").attributes["aria-sort"], "ascending");
+  assert.equal(
+    findAll(indeedPage.elements.get("job-table-body").children[0], (item) => item.className === "role-title")[0].textContent,
+    "Austin Role"
+  );
+  assert.equal(
+    findAll(indeedPage.elements.get("job-table-body").children[0], (item) => item.className === "posted-relative")[0].textContent,
+    "Posted date"
+  );
+  await indeedPage.elements.get("salary-sort").dispatch("click");
+  assert.equal(indeedPage.elements.get("salary-header").attributes["aria-sort"], "ascending");
+  indeedPage.elements.get("search").value = "Remote";
+  await indeedPage.elements.get("search").dispatch("input");
+  assert.equal(indeedPage.elements.get("job-table-body").children.length, 1);
+  await indeedPage.elements.get("naukri-site").dispatch("click");
+  await settle();
+  assert.match(indeedPage.location.assignedHref, /[?&]site=naukri/);
+
+  const postedSortPage = createPage({
+    records: {
+      "indeed:3123456789abcdef": {
+        siteId: "indeed",
+        jobId: "3123456789abcdef",
+        title: "Newest Role",
+        company: "Newest Co",
+        applyType: "Easy Apply",
+        postedText: "Today",
+        capturedAt: "2026-10-17T12:00:00.000Z",
+        url: "https://in.indeed.com/viewjob?jk=3123456789abcdef"
+      },
+      "indeed:4123456789abcdef": {
+        siteId: "indeed",
+        jobId: "4123456789abcdef",
+        title: "Relative Date Role",
+        company: "Relative Co",
+        applyType: "Easy Apply",
+        postedText: "18 days ago",
+        capturedAt: "2026-10-17T12:00:00.000Z",
+        url: "https://in.indeed.com/viewjob?jk=4123456789abcdef"
+      },
+      "indeed:5123456789abcdef": {
+        siteId: "indeed",
+        jobId: "5123456789abcdef",
+        title: "Legacy Timestamp Role",
+        company: "Legacy Co",
+        applyType: "Easy Apply",
+        pubDate: Date.parse("2026-10-10T12:00:00.000Z") / 1000,
+        url: "https://in.indeed.com/viewjob?jk=5123456789abcdef"
+      },
+      "indeed:6123456789abcdef": {
+        siteId: "indeed",
+        jobId: "6123456789abcdef",
+        title: "Approximate Role",
+        company: "Approximate Co",
+        applyType: "Easy Apply",
+        postedText: "30+ days ago",
+        postedApprox: true,
+        capturedAt: "2026-10-17T12:00:00.000Z",
+        url: "https://in.indeed.com/viewjob?jk=6123456789abcdef"
+      },
+      "indeed:7123456789abcdef": {
+        siteId: "indeed",
+        jobId: "7123456789abcdef",
+        title: "Unknown Date Role",
+        company: "Unknown Co",
+        applyType: "Easy Apply",
+        capturedAt: "2026-10-18T12:00:00.000Z",
+        url: "https://in.indeed.com/viewjob?jk=7123456789abcdef"
+      }
+    }
+  }, "?site=indeed");
+  await settle();
+  const titlesInPostedOrder = () => postedSortPage.elements.get("job-table-body").children.map((row) => (
+    findAll(row, (item) => item.className === "role-title")[0].textContent
+  ));
+  assert.deepEqual(titlesInPostedOrder(), [
+    "Newest Role",
+    "Legacy Timestamp Role",
+    "Relative Date Role",
+    "Approximate Role",
+    "Unknown Date Role"
+  ]);
+  assert.equal(
+    postedSortPage.elements.get("dates-footer").textContent,
+    "Dates: 4 from list data, 0 sponsored (no date), 1 unavailable"
+  );
+  const legacyPostedRow = postedSortPage.elements.get("job-table-body").children[1];
+  assert.equal(findAll(legacyPostedRow, (item) => item.className === "posted-relative")[0].textContent, "Posted date");
+  assert.match(findAll(legacyPostedRow, (item) => item.className === "absolute-date")[0].textContent, /10 Oct 2026/);
+  const relativePostedRow = postedSortPage.elements.get("job-table-body").children[2];
+  assert.match(findAll(relativePostedRow, (item) => item.className === "absolute-date")[0].textContent, /29 Sep 2026/);
+  const unknownPostedRow = postedSortPage.elements.get("job-table-body").children[4];
+  const unknownPostedText = findAll(unknownPostedRow, (item) => item.className === "posted-relative")[0];
+  assert.equal(unknownPostedText.textContent, "Date unavailable");
+  assert.equal(unknownPostedText.dataset.state, "unavailable");
+  assert.match(
+    findAll(unknownPostedRow, (item) => item.className === "first-seen")[0].textContent,
+    /First seen .*(?:18|Oct).*2026/
+  );
+  await postedSortPage.elements.get("posted-sort").dispatch("click");
+  assert.deepEqual(titlesInPostedOrder(), [
+    "Approximate Role",
+    "Relative Date Role",
+    "Legacy Timestamp Role",
+    "Newest Role",
+    "Unknown Date Role"
+  ]);
 
   const terminalStorage = {
     jobsById: {
@@ -657,6 +960,42 @@ async function run() {
   assert.doesNotThrow(() => new vm.Script(reportScript[1]));
   await terminalPage.updateStorage("runs.linkedin", terminalStorage["runs.linkedin"]);
   assert.equal(terminalPage.downloadedFiles.length, 1);
+
+  const indeedReportPage = createPage({
+    records: {
+      "indeed:0123456789abcdef": {
+        siteId: "indeed",
+        jobId: "0123456789abcdef",
+        title: "Visited Indeed Role",
+        company: "Indeed Company",
+        location: "Remote",
+        visited: true,
+        applyType: "Company Site",
+        url: "https://in.indeed.com/viewjob?jk=0123456789abcdef"
+      }
+    },
+    "runs.indeed": {
+      runId: "indeed-terminal-run",
+      siteId: "indeed",
+      state: "DONE",
+      startedAt: "2026-10-17T10:00:00.000Z",
+      capturedCount: 1,
+      skippedAppliedCount: 2,
+      skippedExpiredCount: 1
+    },
+    "opened.indeed": {},
+    "ui.indeed.selectedTab": "Company Site"
+  }, "?site=indeed&runId=indeed-terminal-run");
+  await settle();
+  await settle();
+  assert.equal(indeedReportPage.downloadedFiles.length, 1);
+  const indeedReport = await indeedReportPage.downloadedFiles[0].blob.text();
+  assert.match(indeedReport, /id="hide-visited"/);
+  assert.match(indeedReport, /Skipped: 2 applied, 1 expired/);
+  assert.match(indeedReport, /visited-chip/);
+  const indeedReportScript = indeedReport.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(indeedReportScript);
+  assert.doesNotThrow(() => new vm.Script(indeedReportScript[1]));
 
   const legacyReportPage = createPage({
     jobsById: { "101": job("101", "Easy Apply") },

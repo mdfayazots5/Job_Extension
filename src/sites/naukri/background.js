@@ -86,6 +86,15 @@
     };
   }
 
+  function activeRunMessage(run) {
+    const label = run && run.siteId === "indeed"
+      ? "Indeed"
+      : run && run.siteId === "linkedin"
+        ? "LinkedIn"
+        : "Naukri";
+    return `A collector run is already active (RUNNING on ${label}). Stop it before starting another site.`;
+  }
+
   async function getState() {
     const values = await chrome.storage.local.get(keys.runState);
     return values[keys.runState] || defaultState();
@@ -145,8 +154,8 @@
   }
 
   async function getAllSiteRuns() {
-    const values = await chrome.storage.local.get(["runs.linkedin", keys.runState]);
-    return [values["runs.linkedin"], values[keys.runState]].filter(Boolean);
+    const values = await chrome.storage.local.get(["runs.linkedin", "runs.indeed", keys.runState]);
+    return [values["runs.linkedin"], values["runs.indeed"], values[keys.runState]].filter(Boolean);
   }
 
   async function pingContentScript(tabId) {
@@ -412,7 +421,7 @@
 
       const runs = await getAllSiteRuns();
       if (runs.some((run) => ACTIVE_STATES.has(run.state) || run.resultsOpening)) {
-        throw new Error(runGuard.activeRunMessage(runs.find((run) => ACTIVE_STATES.has(run.state) || run.resultsOpening)));
+        throw new Error(activeRunMessage(runs.find((run) => ACTIVE_STATES.has(run.state) || run.resultsOpening)));
       }
       const cooldownValues = await chrome.storage.local.get(keys.cooldown);
       const cooldown = cooldownValues[keys.cooldown] || {};

@@ -209,7 +209,22 @@ async function testNaukriBackground() {
     /already active/
   );
   store["runs.linkedin"].state = "DONE";
+  store["runs.indeed"] = {
+    state: "RUNNING",
+    siteId: "indeed",
+    runId: "indeed-running"
+  };
+  await assert.rejects(
+    background.handleMessage({ type: "START_RUN", siteId: "naukri" }, { id: chrome.runtime.id }),
+    /Indeed/
+  );
+  store["runs.indeed"].state = "DONE";
   store["cooldown.linkedin"] = { until: Date.now() + 24 * 60 * 60 * 1000 };
+  store["cooldown.indeed"] = { until: Date.now() + 24 * 60 * 60 * 1000 };
+  store["killswitch.indeed"] = { triggerCount: 4 };
+  store["opened.indeed"] = { "0123456789abcdef": true };
+  store["budgets.indeed"] = { jobsToday: 3 };
+  store["diagnostics.indeed"] = [{ event: "indeed-only" }];
   store["diagnostics.naukri"] = [
     { at: new Date().toISOString(), flow: true, event: "previous-run-entry" },
     { at: new Date().toISOString(), event: "previous-run-diagnostic" }
@@ -227,6 +242,7 @@ async function testNaukriBackground() {
     store["diagnostics.naukri"].map((entry) => entry.event),
     ["previous-run-diagnostic", "run-start"]
   );
+  assert.equal(store["cooldown.indeed"].until > Date.now(), true);
 
   const capturedRecord = {
     siteId: "naukri",
@@ -333,6 +349,12 @@ async function testNaukriBackground() {
   }, sender);
   assert.equal(store["runs.naukri"].state, "ERROR");
   assert.equal(store["cooldown.naukri"].until - store["cooldown.naukri"].lastBlockAt, 24 * 60 * 60 * 1000);
+  assert.equal(store["cooldown.indeed"].until > Date.now(), true);
+  assert.deepEqual(store["killswitch.indeed"], { triggerCount: 4 });
+  assert.deepEqual(store["opened.indeed"], { "0123456789abcdef": true });
+  assert.deepEqual(store["budgets.indeed"], { jobsToday: 3 });
+  assert.deepEqual(store["diagnostics.indeed"], [{ event: "indeed-only" }]);
+  assert.equal(store["runs.indeed"].state, "DONE");
   store["cooldown.naukri"].until = 0;
 
   await background.handleMessage({ type: "START_RUN", siteId: "naukri" }, { id: chrome.runtime.id });
@@ -388,7 +410,19 @@ async function testNaukriBackground() {
     background.handleMessage({ type: "STOP_RUN", siteId: "naukri" }, { id: chrome.runtime.id }),
     /There is no active Naukri run to stop/
   );
-  console.log("PASS Naukri background: site lock, dedupe/budget, persisted navigation, tab-verified resume, cooldown, retained terminal progress, and page-load timeout.");
+  store["runs.naukri"] = {
+    siteId: "naukri",
+    runId: "stale-naukri-run",
+    state: "RUNNING",
+    tabId: 17,
+    capturedCount: 0,
+    lastActionAt: new Date(Date.now() - 16 * 60 * 1000).toISOString()
+  };
+  await background.recoverStaleRun();
+  assert.equal(store["runs.naukri"].state, "STOPPED");
+  assert.equal(store["runs.naukri"].terminalReason, "stale");
+  assert.equal(store["cooldown.indeed"].until > Date.now(), true);
+  console.log("PASS Naukri background: global lock, site-scoped cooldown/kill-switch, stale recovery, dedupe/budget, persisted navigation, resume, and page-load timeout.");
 }
 
 Promise.resolve()

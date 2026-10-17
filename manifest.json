@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Job Extensions",
   "version": "0.4.0",
-  "description": "A local-only LinkedIn jobs collector with a live results page.",
+  "description": "A local-only LinkedIn, Naukri, and Indeed jobs collector with a live results page.",
   "permissions": [
     "storage",
     "scripting",
@@ -11,7 +11,8 @@
   ],
   "host_permissions": [
     "https://www.linkedin.com/*",
-    "https://www.naukri.com/*"
+    "https://www.naukri.com/*",
+    "https://in.indeed.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -67,6 +68,22 @@
         "src/sites/naukri/adapter.js",
         "src/core/run-loop.js",
         "src/sites/naukri/collector.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://in.indeed.com/*"
+      ],
+      "js": [
+        "src/core/storage.js",
+        "src/sites/indeed/config.js",
+        "src/sites/indeed/selectors.js",
+        "src/sites/indeed/parse.js",
+        "src/sites/indeed/adapter.js",
+        "src/sites/registry.js",
+        "src/core/run-loop.js",
+        "src/sites/indeed/collector.js"
       ],
       "run_at": "document_idle"
     }

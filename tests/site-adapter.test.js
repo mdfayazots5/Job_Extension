@@ -18,6 +18,10 @@ for (const file of [
   "src/sites/linkedin/selectors.js",
   "src/sites/linkedin/metadata.js",
   "src/sites/linkedin/adapter.js",
+  "src/sites/indeed/config.js",
+  "src/sites/indeed/selectors.js",
+  "src/sites/indeed/parse.js",
+  "src/sites/indeed/adapter.js",
   "src/sites/registry.js"
 ]) {
   vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
@@ -66,4 +70,14 @@ assert.deepEqual(
     { id: "Company Site", label: "Company Apply" }
   ]
 );
-console.log("Site-adapter tests passed: LinkedIn routing, normalization, apply links, and UI config.");
+const indeedAdapter = context.JobCollectorSiteRegistry.getAdapter("indeed");
+assert.equal(indeedAdapter.label, "Indeed");
+assert.equal(
+  context.JobCollectorSiteRegistry.getAdapterForUrl("https://in.indeed.com/jobs?q=developer"),
+  indeedAdapter
+);
+assert.equal(
+  context.JobCollectorSiteRegistry.getAdapterForUrl("https://in.indeed.com/jobs"),
+  null
+);
+console.log("Site-adapter tests passed: LinkedIn behavior and Indeed search URL routing.");

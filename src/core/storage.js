@@ -44,7 +44,8 @@
     if (!additionalValues || typeof additionalValues !== "object" || Array.isArray(additionalValues)) {
       throw new Error("Additional site storage values must be supplied as an object.");
     }
-    const values = await chrome.storage.local.get(RECORDS_KEY);
+    const siteKeys = keysForSite(siteId);
+    const values = await chrome.storage.local.get([RECORDS_KEY, siteKeys.openedJobs]);
     const current = values[RECORDS_KEY] || {};
     if (!current || typeof current !== "object" || Array.isArray(current)) {
       throw new Error("Stored records data is not a namespaced job-record object.");
@@ -61,7 +62,24 @@
       }
       next[`${prefix}${jobId}`] = record;
     }
-    await chrome.storage.local.set({ ...additionalValues, [RECORDS_KEY]: next });
+    const opened = Object.prototype.hasOwnProperty.call(additionalValues, siteKeys.openedJobs)
+      ? additionalValues[siteKeys.openedJobs]
+      : values[siteKeys.openedJobs];
+    const retainedJobIds = new Set(
+      Object.keys(next)
+        .filter((key) => key.startsWith(prefix))
+        .map((key) => key.slice(prefix.length))
+    );
+    const prunedOpened = opened && typeof opened === "object" && !Array.isArray(opened)
+      ? Object.fromEntries(Object.entries(opened).filter(([jobId, isOpened]) => (
+        isOpened === true && retainedJobIds.has(jobId)
+      )))
+      : {};
+    await chrome.storage.local.set({
+      ...additionalValues,
+      [siteKeys.openedJobs]: prunedOpened,
+      [RECORDS_KEY]: next
+    });
   }
 
   global.JobCollectorStorage = Object.freeze({

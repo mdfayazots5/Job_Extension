@@ -16,8 +16,10 @@ const elements = {
   siteSwitcher: document.getElementById("site-switcher"),
   linkedinSite: document.getElementById("linkedin-site"),
   naukriSite: document.getElementById("naukri-site"),
+  indeedSite: document.getElementById("indeed-site"),
   linkedinSiteCount: document.getElementById("linkedin-site-count"),
   naukriSiteCount: document.getElementById("naukri-site-count"),
+  indeedSiteCount: document.getElementById("indeed-site-count"),
   easyTab: document.getElementById("easy-tab"),
   directTab: document.getElementById("direct-tab"),
   companyTab: document.getElementById("company-tab"),
@@ -29,6 +31,10 @@ const elements = {
   searchLabel: document.getElementById("search-label"),
   applicantReviewFilter: document.getElementById("applicant-review-filter"),
   hideOpened: document.getElementById("hide-opened"),
+  hideVisited: document.getElementById("hide-visited"),
+  hideVisitedControl: document.getElementById("hide-visited-control"),
+  hideSponsored: document.getElementById("hide-sponsored"),
+  hideSponsoredControl: document.getElementById("hide-sponsored-control"),
   sortButtons: {
     role: document.getElementById("role-sort"),
     company: document.getElementById("company-sort"),
@@ -41,6 +47,9 @@ const elements = {
   },
   subtitle: document.getElementById("run-subtitle"),
   siteRunFooter: document.getElementById("site-run-footer"),
+  indeedSkippedFooter: document.getElementById("indeed-skipped-footer"),
+  datesFooter: document.getElementById("dates-footer"),
+  parseWarningFooter: document.getElementById("parse-warning-footer"),
   total: document.getElementById("total-count"),
   skipped: document.getElementById("skipped-count"),
   feedback: document.getElementById("feedback")
@@ -54,7 +63,7 @@ let storageSnapshot = {
   resultsSelectedTab: null
 };
 let selectedTab = APPLY_TABS[0];
-let siteCounts = { linkedin: 0, naukri: 0 };
+let siteCounts = { linkedin: 0, naukri: 0, indeed: 0 };
 let openedWriteQueue = Promise.resolve();
 let sortState = { key: "posted", direction: "descending" };
 let reportDownloadPromise = null;
@@ -81,13 +90,20 @@ function configureSite(siteId) {
   document.title = `${adapter.label} Jobs`;
   elements.applicantReviewFilter.closest("label").hidden = siteId !== "linkedin";
   elements.skipped.hidden = siteId !== "linkedin";
-  elements.subtitle.hidden = siteId === "naukri";
+  elements.subtitle.hidden = siteId !== "linkedin";
   elements.siteRunFooter.hidden = siteId !== "naukri";
+  elements.parseWarningFooter.hidden = siteId !== "indeed";
+  elements.hideVisitedControl.hidden = siteId !== "indeed";
+  elements.hideSponsoredControl.hidden = siteId !== "indeed";
   elements.search.placeholder = siteId === "naukri"
     ? "Search role, company, agency, or skills"
+    : siteId === "indeed"
+      ? "Search role, company, or location"
     : "Search role or company";
   elements.searchLabel.textContent = siteId === "naukri"
     ? "Search jobs by role, company, hiring agency, or skills"
+    : siteId === "indeed"
+      ? "Search jobs by role, company, or location"
     : "Search jobs by role or company";
   elements.easyTab.hidden = false;
   elements.directTab.hidden = !adapter.ui.tabs.some((tab) => tab.id === "Direct Apply");
@@ -96,8 +112,9 @@ function configureSite(siteId) {
   ));
   elements.linkedinSite.setAttribute("aria-pressed", String(siteId === "linkedin"));
   elements.naukriSite.setAttribute("aria-pressed", String(siteId === "naukri"));
+  elements.indeedSite.setAttribute("aria-pressed", String(siteId === "indeed"));
   document.body.dataset.site = siteId;
-  if (siteId === "naukri") {
+  if (siteId === "naukri" || siteId === "indeed") {
     document.body.style.setProperty("--site-accent", adapter.ui.accent);
   }
   renderHeaders();
@@ -171,12 +188,15 @@ function renderSiteCounts(namespacedRecords) {
     : {};
   siteCounts = {
     linkedin: Object.keys(records).filter((key) => key.startsWith("linkedin:")).length,
-    naukri: Object.keys(records).filter((key) => key.startsWith("naukri:")).length
+    naukri: Object.keys(records).filter((key) => key.startsWith("naukri:")).length,
+    indeed: Object.keys(records).filter((key) => key.startsWith("indeed:")).length
   };
   elements.linkedinSiteCount.textContent = String(siteCounts.linkedin);
   elements.naukriSiteCount.textContent = String(siteCounts.naukri);
+  elements.indeedSiteCount.textContent = String(siteCounts.indeed);
   elements.linkedinSite.classList.toggle("is-empty", siteCounts.linkedin === 0);
   elements.naukriSite.classList.toggle("is-empty", siteCounts.naukri === 0);
+  elements.indeedSite.classList.toggle("is-empty", siteCounts.indeed === 0);
 }
 
 function getRecords() {
@@ -273,6 +293,90 @@ function formatAbsoluteDate(value) {
   return `~${day} ${month} ${year}`.trim();
 }
 
+function getIndeedPostedTimestamp(record) {
+  if (
+    record.sponsored === true
+    || record.postedApprox
+    || /^30\+/i.test(String(record.postedText || "").trim())
+  ) {
+    return null;
+  }
+  const storedEstimate = Date.parse(String(record.postedDateEstimate || ""));
+  if (Number.isFinite(storedEstimate)) {
+    return storedEstimate;
+  }
+
+  const relativeText = String(record.postedText || "").trim();
+  const capturedAt = Date.parse(String(record.capturedAt || ""));
+  if (Number.isFinite(capturedAt)) {
+    if (/^(?:just posted|today)$/i.test(relativeText)) {
+      return capturedAt;
+    }
+    const daysAgo = relativeText.match(/^(\d+)\s+days?\s+ago$/i);
+    if (daysAgo) {
+      return capturedAt - Number(daysAgo[1]) * 24 * 60 * 60 * 1000;
+    }
+  }
+
+  const pubDate = record.pubDate;
+  let publishedAt = typeof pubDate === "number" || /^\d+$/.test(String(pubDate || ""))
+    ? Number(pubDate)
+    : Date.parse(String(pubDate || ""));
+  if (Number.isFinite(publishedAt) && publishedAt > 0 && publishedAt < 1e11) {
+    publishedAt *= 1000;
+  }
+  return Number.isFinite(publishedAt)
+    && publishedAt > 0
+    && Number.isFinite(new Date(publishedAt).getTime())
+    ? publishedAt
+    : null;
+}
+
+function hasIndeedPostedData(record) {
+  const relativeText = String(record.postedText || "").trim();
+  return Boolean(
+    record.postedApprox
+    || (/^(?:just posted|today|\d+\s+days?\s+ago|30\+\s+days?\s+ago)$/i.test(relativeText)
+      && relativeText !== "Date unavailable"
+      && relativeText !== "Date not listed")
+    || getIndeedPostedTimestamp(record) !== null
+  );
+}
+
+function comparePostedRecords(first, second, direction, siteId = SITE_ID) {
+  if (siteId === "indeed") {
+    const postedKind = (record) => {
+      if (record.sponsored === true) {
+        return { type: "unknown", timestamp: null };
+      }
+      if (record.postedApprox || /^30\+/i.test(String(record.postedText || "").trim())) {
+        return { type: "approximate", timestamp: null };
+      }
+      const timestamp = getIndeedPostedTimestamp(record);
+      return timestamp === null
+        ? { type: "unknown", timestamp: null }
+        : { type: "dated", timestamp };
+    };
+    const firstPosted = postedKind(first);
+    const secondPosted = postedKind(second);
+    if (firstPosted.type !== secondPosted.type) {
+      const ranks = direction > 0
+        ? { approximate: 0, dated: 1, unknown: 2 }
+        : { dated: 0, approximate: 1, unknown: 2 };
+      return ranks[firstPosted.type] - ranks[secondPosted.type];
+    }
+    return firstPosted.type === "dated"
+      ? (firstPosted.timestamp - secondPosted.timestamp) * direction
+      : 0;
+  }
+
+  const firstDate = Date.parse(first.postedDateEstimate || first.capturedAt || "");
+  const secondDate = Date.parse(second.postedDateEstimate || second.capturedAt || "");
+  const normalizedFirst = Number.isNaN(firstDate) ? -Infinity : firstDate;
+  const normalizedSecond = Number.isNaN(secondDate) ? -Infinity : secondDate;
+  return (normalizedFirst - normalizedSecond) * direction;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -300,9 +404,14 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     postedType: record.postedType,
     postedText: String(record.postedText || "Date not listed"),
     postedDateEstimate: String(record.postedDateEstimate || ""),
+    postedApprox: record.postedApprox === true,
+    pubDate: typeof record.pubDate === "number" || typeof record.pubDate === "string"
+      ? record.pubDate
+      : null,
     applicantReviewStatus: record.applicantReviewStatus === "actively-reviewing"
       ? "actively-reviewing"
       : "not-indicated",
+    visited: record.visited === true,
     capturedAt: String(record.capturedAt || ""),
     url: SITE_ID === "linkedin"
       ? getLinkedInJobUrl(record) || validHttpUrl(record.url)
@@ -328,6 +437,9 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
   const skippedCount = SITE_ID === "linkedin"
     ? records.filter((record) => record.applyType === "Unknown").length
     : 0;
+  const indeedSkippedSummary = SITE_ID === "indeed"
+    ? `Skipped: ${Number(runState && runState.skippedAppliedCount) || 0} applied, ${Number(runState && runState.skippedExpiredCount) || 0} expired`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -368,6 +480,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     .location-cell{width:17%;color:var(--muted);line-height:1.4}.posted-cell{width:21%}.posted-content{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
     .posted-badge{display:inline-flex;min-height:22px;align-items:center;padding:3px 8px;border-radius:999px;background:var(--surface-soft);color:var(--muted);font-size:.7rem;font-weight:700}
     .posted-badge.is-reposted{background:#fff1df;color:#8a4b00}.posted-relative{color:var(--text);font-size:.82rem}.absolute-date{display:block;margin-top:2px;color:var(--muted);font-size:.75rem}
+    .visited-chip{display:inline-flex;align-items:center;margin:4px 5px 0 0;padding:2px 7px;border-radius:999px;background:#edf1f5;color:#536171;font-size:.68rem;font-weight:650}
     .review-status-tag{display:inline-flex;align-items:center;margin:4px 5px 0 0;padding:3px 8px;border-radius:999px;background:var(--surface-soft);color:var(--muted);font-size:.68rem;font-weight:650;line-height:1.35}
     .review-status-tag.is-active{background:#e6f6ed;color:#17633a}
     .apply-column,.apply-cell{width:10.5%;text-align:right}.apply-cell-content{display:inline-flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px 8px}
@@ -406,6 +519,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         <label class="search-control"><span class="visually-hidden">Search jobs by role or company</span><input id="search" type="search" autocomplete="off" placeholder="Search role or company"></label>
         <label class="review-filter"><span class="visually-hidden">Filter by applicant review status</span><select id="applicant-review-filter"><option value="">All review statuses</option><option value="actively-reviewing">Actively reviewing</option><option value="not-indicated">No status shown</option></select></label>
         <label class="hide-opened-control"><input id="hide-opened" type="checkbox"><span>Hide opened</span></label>
+        ${SITE_ID === "indeed" ? '<label class="hide-opened-control"><input id="hide-visited" type="checkbox"><span>Hide visited</span></label>' : ""}
       </div>
     </div>
     <section id="results-panel" role="tabpanel" aria-labelledby="easy-tab" tabindex="0">
@@ -425,6 +539,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       <p id="empty-state" class="empty-state" hidden></p>
     </section>
     <p class="skipped-count">${skippedCount} skipped (no apply option)</p>
+    ${SITE_ID === "indeed" ? `<p class="skipped-count">${escapeHtml(indeedSkippedSummary)}</p>` : ""}
   </main>
   <script>
     "use strict";
@@ -443,6 +558,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     const search = document.getElementById("search");
     const applicantReviewFilter = document.getElementById("applicant-review-filter");
     const hideOpened = document.getElementById("hide-opened");
+    const hideVisited = document.getElementById("hide-visited");
     const empty = document.getElementById("empty-state");
     const panel = document.getElementById("results-panel");
     const sortHeaders = {
@@ -482,6 +598,47 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       if (Number.isNaN(date.getTime())) return "";
       return "~" + new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", year: "numeric" }).format(date);
     };
+    const postedTimestamp = (record) => {
+      if (record.postedApprox || /^30\\+/i.test(String(record.postedText || "").trim())) return null;
+      const estimate = Date.parse(String(record.postedDateEstimate || ""));
+      if (Number.isFinite(estimate)) return estimate;
+      const relativeText = String(record.postedText || "").trim();
+      const capturedAt = Date.parse(String(record.capturedAt || ""));
+      if (Number.isFinite(capturedAt)) {
+        if (/^(?:just posted|today)$/i.test(relativeText)) return capturedAt;
+        const daysAgo = relativeText.match(/^(\\d+)\\s+days?\\s+ago$/i);
+        if (daysAgo) return capturedAt - Number(daysAgo[1]) * 86400000;
+      }
+      let pubDate = typeof record.pubDate === "number" || /^\\d+$/.test(String(record.pubDate || ""))
+        ? Number(record.pubDate)
+        : Date.parse(String(record.pubDate || ""));
+      if (Number.isFinite(pubDate) && pubDate > 0 && pubDate < 1e11) pubDate *= 1000;
+      return Number.isFinite(pubDate) ? pubDate : null;
+    };
+    const comparePosted = (first, second, direction) => {
+      if ("${escapeHtml(SITE_ID)}" !== "indeed") {
+        const firstDate = Date.parse(first.postedDateEstimate || first.capturedAt || "");
+        const secondDate = Date.parse(second.postedDateEstimate || second.capturedAt || "");
+        return ((Number.isNaN(firstDate) ? -Infinity : firstDate)
+          - (Number.isNaN(secondDate) ? -Infinity : secondDate)) * direction;
+      }
+      const kind = (record) => record.sponsored === true
+        ? { type: "unknown", timestamp: null }
+        : record.postedApprox || /^30\\+/i.test(String(record.postedText || "").trim())
+          ? { type: "approximate", timestamp: null }
+          : { type: postedTimestamp(record) === null ? "unknown" : "dated", timestamp: postedTimestamp(record) };
+      const firstPosted = kind(first);
+      const secondPosted = kind(second);
+      if (firstPosted.type !== secondPosted.type) {
+        const ranks = direction > 0
+          ? { approximate: 0, dated: 1, unknown: 2 }
+          : { dated: 0, approximate: 1, unknown: 2 };
+        return ranks[firstPosted.type] - ranks[secondPosted.type];
+      }
+      return firstPosted.type === "dated"
+        ? (firstPosted.timestamp - secondPosted.timestamp) * direction
+        : 0;
+    };
     const saveOpened = () => {
       try { localStorage.setItem(storageKey, JSON.stringify(opened)); } catch (_error) {}
     };
@@ -515,7 +672,10 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
           : "not-indicated") === reviewStatus)
         && (record.title + " " + record.company).toLocaleLowerCase().includes(term)
       ));
-      const visible = matched.filter((record) => !hideOpened.checked || opened[record.jobId] !== true);
+      const visible = matched.filter((record) => (
+        (!hideOpened.checked || opened[record.jobId] !== true)
+        && (!hideVisited || !hideVisited.checked || record.visited !== true)
+      ));
       const direction = sortState.direction === "ascending" ? 1 : -1;
       visible.sort((a, b) => {
         let result = 0;
@@ -523,11 +683,9 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
           const field = sortState.key === "role" ? "title" : "company";
           result = String(a[field] || "").localeCompare(String(b[field] || ""), undefined, { sensitivity: "base" });
         } else {
-          const dateA = Date.parse(a.postedDateEstimate || a.capturedAt || "");
-          const dateB = Date.parse(b.postedDateEstimate || b.capturedAt || "");
-          result = (Number.isNaN(dateA) ? -Infinity : dateA) - (Number.isNaN(dateB) ? -Infinity : dateB);
+          result = comparePosted(a, b, direction);
         }
-        return result * direction;
+        return sortState.key === "posted" ? result : result * direction;
       });
       for (const [index, tab] of tabs.entries()) {
         const button = buttonForTab(tab, index);
@@ -559,6 +717,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
           ? "LinkedIn labels this job as actively reviewing applicants."
           : "LinkedIn did not show an applicant-review status for this job.";
         roleCell.appendChild(reviewTag);
+        if (record.visited) roleCell.appendChild(text("span", "visited-chip", "Visited"));
         row.appendChild(roleCell);
         const companyCell = text("td", "company-cell", "");
         const companyRow = text("div", "company-row", "");
@@ -589,7 +748,14 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         postedContent.appendChild(text("span", record.postedType === "Reposted" ? "posted-badge is-reposted" : "posted-badge", record.postedType === "Posted" || record.postedType === "Reposted" ? record.postedType : "Unknown"));
         postedContent.appendChild(text("span", "posted-relative", record.postedText));
         postedCell.appendChild(postedContent);
-        const date = absoluteDate(record.postedDateEstimate);
+        const timestamp = "${escapeHtml(SITE_ID)}" === "indeed"
+          ? postedTimestamp(record)
+          : Date.parse(record.postedDateEstimate || "");
+        const date = "${escapeHtml(SITE_ID)}" === "indeed" && record.postedApprox
+          ? ""
+          : absoluteDate(Number.isFinite(timestamp)
+            ? new Date(timestamp).toISOString()
+            : record.postedDateEstimate);
         if (date) postedCell.appendChild(text("span", "absolute-date", date));
         row.appendChild(postedCell);
         const applyCell = text("td", "apply-cell", "");
@@ -669,6 +835,8 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     search.addEventListener("input", render);
     applicantReviewFilter.addEventListener("change", render);
     hideOpened.addEventListener("change", render);
+    hideVisited?.addEventListener("change", render);
+    hideSponsored?.addEventListener("change", render);
     for (const [key, button] of Object.entries(sortButtons)) {
       button.addEventListener("click", () => {
         sortState = sortState.key === key
@@ -936,11 +1104,28 @@ function createJobRow(record, tab, index) {
   if (SITE_ID === "naukri" && record.workMode) {
     locationCell.appendChild(createTextElement("span", "work-mode-chip", record.workMode));
   }
+  if (SITE_ID === "indeed" && record.workMode === "Remote") {
+    locationCell.appendChild(createTextElement("span", "work-mode-chip", "Remote"));
+  }
   cells.location = locationCell;
   cells.experience = createTextElement("td", "experience-cell", record.experience || "—");
   cells.experience.setAttribute("data-label", "Exp");
   cells.salary = createTextElement("td", "salary-cell", record.salary || "—");
   cells.salary.setAttribute("data-label", "Salary");
+  cells.type = createTextElement("td", "type-cell", record.jobType || "—");
+  cells.type.setAttribute("data-label", "Type");
+
+  if (SITE_ID === "indeed") {
+    if (record.sponsored) {
+      roleCell.appendChild(createTextElement("span", "job-chip sponsored-chip", "Sponsored"));
+    }
+    if (record.urgentlyHiring) {
+      roleCell.appendChild(createTextElement("span", "job-chip hiring-chip", "Urgently hiring"));
+    }
+    if (record.visited === true) {
+      roleCell.appendChild(createTextElement("span", "job-chip visited-chip", "Visited"));
+    }
+  }
 
   const postedCell = document.createElement("td");
   postedCell.className = "posted-cell";
@@ -957,19 +1142,55 @@ function createJobRow(record, tab, index) {
       postedType
     ));
   }
-  postedContent.appendChild(createTextElement(
-    "span",
-    "posted-relative",
-    record.postedText || "Date not listed"
-  ));
+  const postedLabel = SITE_ID === "indeed" && record.sponsored === true
+    ? "No date (sponsored)"
+    : SITE_ID === "indeed" && record.postedApprox
+      ? "30+ days"
+      : SITE_ID === "indeed" && getIndeedPostedTimestamp(record) === null
+        ? "Date unavailable"
+        : record.postedText || (SITE_ID === "indeed" ? "Posted date" : "Date not listed");
+  const postedRelative = createTextElement("span", "posted-relative", postedLabel);
+  if (SITE_ID === "indeed" && record.postedApprox) {
+    postedRelative.setAttribute(
+      "title",
+      "Indeed reports this posting as 30+ days old; an exact date is unavailable."
+    );
+  }
+  const postedTimestamp = SITE_ID === "indeed" ? getIndeedPostedTimestamp(record) : null;
+  if (
+    SITE_ID === "indeed"
+    && record.sponsored !== true
+    && !record.postedApprox
+    && !record.postedText
+    && postedTimestamp === null
+  ) {
+    postedRelative.dataset.state = "unavailable";
+  }
+  postedContent.appendChild(postedRelative);
   postedCell.appendChild(postedContent);
-  const absoluteDate = formatAbsoluteDate(record.postedDateEstimate);
+  const postedDateEstimate = SITE_ID === "indeed" && postedTimestamp !== null
+    ? new Date(postedTimestamp).toISOString()
+    : record.postedDateEstimate;
+  const absoluteDate = SITE_ID === "indeed" && (record.postedApprox || record.sponsored)
+    ? ""
+    : formatAbsoluteDate(postedDateEstimate);
   if (absoluteDate) {
     const date = createTextElement("span", "absolute-date", absoluteDate);
-    if (SITE_ID === "naukri" && record.postedApprox) {
+    if ((SITE_ID === "naukri" || SITE_ID === "indeed") && record.postedApprox) {
       date.setAttribute("title", `Approximate date estimated from "${record.postedText || "unknown posting age"}".`);
     }
     postedCell.appendChild(date);
+  }
+  if (SITE_ID === "indeed" && !record.sponsored && postedTimestamp === null) {
+    const firstSeen = Date.parse(String(record.firstSeenAt || record.capturedAt || ""));
+    if (Number.isFinite(firstSeen)) {
+      const firstSeenDate = new Intl.DateTimeFormat(undefined, {
+        day: "2-digit",
+        month: "short",
+        year: "numeric"
+      }).format(new Date(firstSeen));
+      postedCell.appendChild(createTextElement("span", "first-seen", `First seen ${firstSeenDate}`));
+    }
   }
   cells.posted = postedCell;
 
@@ -1015,45 +1236,52 @@ function sortRecords(records) {
   const direction = sortState.direction === "ascending" ? 1 : -1;
   sorted.sort((first, second) => {
     let comparison = 0;
-    if (sortState.key === "role") {
-      comparison = String(first.title || "").localeCompare(
-        String(second.title || ""), undefined, { sensitivity: "base" }
-      );
-    } else if (sortState.key === "company") {
-      comparison = String(first.company || "").localeCompare(
-        String(second.company || ""), undefined, { sensitivity: "base" }
+    const textFields = {
+      role: "title",
+      company: "company",
+      location: "location",
+      salary: "salary",
+      type: "jobType"
+    };
+    if (textFields[sortState.key]) {
+      const field = textFields[sortState.key];
+      comparison = String(first[field] || "").localeCompare(
+        String(second[field] || ""), undefined, { sensitivity: "base" }
       );
     } else {
-      const firstDate = Date.parse(first.postedDateEstimate || first.capturedAt || "");
-      const secondDate = Date.parse(second.postedDateEstimate || second.capturedAt || "");
-      const normalizedFirst = Number.isNaN(firstDate) ? -Infinity : firstDate;
-      const normalizedSecond = Number.isNaN(secondDate) ? -Infinity : secondDate;
-      comparison = normalizedFirst - normalizedSecond;
+      comparison = comparePostedRecords(first, second, direction);
     }
-    return comparison * direction;
+    return comparison;
   });
   return sorted;
 }
 
 function chooseInitialTab(records) {
+  const visibleRecords = SITE_ID === "indeed" && elements.hideSponsored.checked
+    ? records.filter((record) => record.sponsored !== true)
+    : records;
   const storedTab = storageSnapshot.resultsSelectedTab;
   if (APPLY_TABS.includes(storedTab)) {
-    selectedTab = getRecordsForTab(records, storedTab).length > 0
-      || !APPLY_TABS.some((tab) => tab !== storedTab && getRecordsForTab(records, tab).length > 0)
+    selectedTab = getRecordsForTab(visibleRecords, storedTab).length > 0
+      || !APPLY_TABS.some((tab) => tab !== storedTab && getRecordsForTab(visibleRecords, tab).length > 0)
       ? storedTab
-      : APPLY_TABS.find((tab) => getRecordsForTab(records, tab).length > 0) || storedTab;
+      : APPLY_TABS.find((tab) => getRecordsForTab(visibleRecords, tab).length > 0) || storedTab;
     return;
   }
-  selectedTab = APPLY_TABS.find((tab) => getRecordsForTab(records, tab).length > 0)
+  selectedTab = APPLY_TABS.find((tab) => getRecordsForTab(visibleRecords, tab).length > 0)
     || APPLY_TABS[0];
 }
 
 function render() {
   try {
     const records = getRecords();
-    const recordsByTab = Object.fromEntries(
-      APPLY_TABS.map((tab) => [tab, getRecordsForTab(records, tab)])
-    );
+    const sponsoredHidden = SITE_ID === "indeed" && elements.hideSponsored.checked;
+    const recordsByTab = Object.fromEntries(APPLY_TABS.map((tab) => {
+      const tabRecords = getRecordsForTab(records, tab);
+      return [tab, sponsoredHidden
+        ? tabRecords.filter((record) => record.sponsored !== true)
+        : tabRecords];
+    }));
     const skippedCount = SITE_ID === "linkedin"
       ? records.filter((record) => record.applyType === "Unknown").length
       : 0;
@@ -1067,7 +1295,7 @@ function render() {
           : "not-indicated") === applicantReviewStatus)
       && `${record.title || ""} ${record.company || ""} ${record.postedBy || ""} ${
         Array.isArray(record.skills) ? record.skills.join(" ") : ""
-      }`
+      } ${SITE_ID === "indeed" ? `${record.location || ""} ${record.locationRaw || ""}` : ""}`
         .toLocaleLowerCase()
         .includes(searchTerm)
     ));
@@ -1075,6 +1303,8 @@ function render() {
       !elements.hideOpened.checked
       || !storageSnapshot.openedJobsById
       || storageSnapshot.openedJobsById[String(record.jobId || "")] !== true
+    )).filter((record) => (
+      SITE_ID !== "indeed" || !elements.hideVisited.checked || record.visited !== true
     )));
 
     for (const [index, tab] of APPLY_TABS.entries()) {
@@ -1090,6 +1320,33 @@ function render() {
     const runInfo = formatRunDate(storageSnapshot.collectorState);
     elements.subtitle.textContent = runInfo;
     elements.siteRunFooter.textContent = runInfo;
+    const indeedDateCounts = SITE_ID === "indeed"
+      ? records.reduce((counts, record) => {
+        if (record.sponsored === true) {
+          counts.sponsored += 1;
+        } else if (hasIndeedPostedData(record)) {
+          counts.fromList += 1;
+        } else {
+          counts.unavailable += 1;
+        }
+        return counts;
+      }, { fromList: 0, sponsored: 0, unavailable: 0 })
+      : 0;
+    const sponsoredHiddenCount = sponsoredHidden
+      ? indeedDateCounts.sponsored
+      : 0;
+    elements.datesFooter.hidden = SITE_ID !== "indeed";
+    elements.datesFooter.textContent = SITE_ID === "indeed"
+      ? `Dates: ${indeedDateCounts.fromList} from list data, ${indeedDateCounts.sponsored} sponsored (no date), ${indeedDateCounts.unavailable} unavailable`
+      : "";
+    elements.parseWarningFooter.hidden = SITE_ID !== "indeed" || sponsoredHiddenCount === 0;
+    elements.parseWarningFooter.textContent = sponsoredHiddenCount
+      ? `${sponsoredHiddenCount} sponsored hidden`
+      : "";
+    elements.indeedSkippedFooter.hidden = SITE_ID !== "indeed";
+    elements.indeedSkippedFooter.textContent = SITE_ID === "indeed"
+      ? `Skipped: ${Number(storageSnapshot.collectorState && storageSnapshot.collectorState.skippedAppliedCount) || 0} applied, ${Number(storageSnapshot.collectorState && storageSnapshot.collectorState.skippedExpiredCount) || 0} expired`
+      : "";
     elements.skipped.hidden = SITE_ID !== "linkedin";
     elements.skipped.textContent = `${skippedCount} skipped (no apply option)`;
     elements.tableBody.replaceChildren();
@@ -1114,10 +1371,16 @@ function render() {
     elements.empty.hidden = visibleRecords.length > 0;
     elements.empty.textContent = searchTerm && matchingRecords.length === 0
       ? "No jobs match your search."
-      : applicantReviewStatus && matchingRecords.length === 0 && activeRecords.length > 0
+    : SITE_ID === "indeed" && sponsoredHidden && activeRecords.length === 0
+      && getRecordsForTab(records, selectedTab).some((record) => record.sponsored === true)
+      ? "Sponsored jobs are hidden. Uncheck Hide sponsored to include them."
+    : applicantReviewStatus && matchingRecords.length === 0 && activeRecords.length > 0
         ? "No jobs match this applicant-review filter."
       : elements.hideOpened.checked && matchingRecords.length > 0
         ? "All matching jobs have been opened."
+        : SITE_ID === "indeed" && elements.hideVisited.checked
+          && matchingRecords.some((record) => record.visited === true)
+          ? "All matching jobs have been visited."
         : `No ${TAB_LABELS[selectedTab]} jobs captured yet.`;
     if (!elements.feedback.textContent.startsWith("Could not")) {
       elements.feedback.textContent = "";
@@ -1223,9 +1486,14 @@ elements.linkedinSite.addEventListener("click", () => {
 elements.naukriSite.addEventListener("click", () => {
   void switchSite("naukri");
 });
+elements.indeedSite.addEventListener("click", () => {
+  void switchSite("indeed");
+});
 elements.search.addEventListener("input", render);
 elements.applicantReviewFilter.addEventListener("change", render);
 elements.hideOpened.addEventListener("change", render);
+elements.hideVisited.addEventListener("change", render);
+elements.hideSponsored.addEventListener("change", render);
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {

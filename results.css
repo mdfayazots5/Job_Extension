@@ -49,6 +49,10 @@ tr:focus-visible {
   padding: 30px 0 36px;
 }
 
+[data-site="indeed"] .page-shell {
+  padding-top: 22px;
+}
+
 .page-header {
   display: flex;
   min-height: 42px;
@@ -211,6 +215,11 @@ body[data-active-tab="Company Site"] .search-control input:focus {
   white-space: nowrap;
 }
 
+.visited-chip {
+  background: #edf1f5;
+  color: #536171;
+}
+
 .hide-opened-control input {
   width: 15px;
   height: 15px;
@@ -328,6 +337,30 @@ body[data-active-tab="Company Site"] .sort-indicator {
 
 .role-title {
   display: inline;
+}
+
+.job-chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin: 4px 5px 0 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.sponsored-chip {
+  background: #f0f2f5;
+}
+
+.hiring-chip {
+  background: #fff1df;
+  color: #8a4b00;
 }
 
 .review-status-tag {
@@ -463,6 +496,45 @@ body[data-active-tab="Company Site"] .sort-indicator {
   width: 9%;
 }
 
+[data-site="indeed"] .number-column {
+  width: 4%;
+}
+
+[data-site="indeed"] .role-cell {
+  width: 18%;
+}
+
+[data-site="indeed"] .company-cell {
+  width: 16%;
+}
+
+[data-site="indeed"] .location-cell {
+  width: 15%;
+}
+
+[data-site="indeed"] .salary-cell {
+  width: 13%;
+}
+
+[data-site="indeed"] .type-cell {
+  width: 9%;
+}
+
+[data-site="indeed"] .posted-cell {
+  width: 15%;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-site="indeed"] .table-wrap {
+  max-height: min(760px, calc(100vh - 285px));
+  min-height: min(360px, calc(100vh - 285px));
+}
+
+[data-site="indeed"] .apply-column,
+[data-site="indeed"] .apply-cell {
+  width: 10%;
+}
+
 .posted-cell {
   width: 21%;
 }
@@ -494,6 +566,12 @@ body[data-active-tab="Company Site"] .sort-indicator {
 .posted-relative {
   color: var(--text);
   font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.posted-relative[data-state="unavailable"] {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .absolute-date {
@@ -501,6 +579,14 @@ body[data-active-tab="Company Site"] .sort-indicator {
   margin-top: 2px;
   color: var(--muted);
   font-size: 0.75rem;
+}
+
+.first-seen {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 450;
 }
 
 .apply-column,

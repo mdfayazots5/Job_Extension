@@ -13,6 +13,7 @@
   let stopRequested = false;
   let navigationTimer = null;
   let navigationMonitor = null;
+  let navigationRunId = null;
   let spaResumeInProgress = false;
   let resumeStarted = false;
 
@@ -36,6 +37,18 @@
 
   function wait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  function clearNavigationWatch() {
+    if (navigationTimer !== null) {
+      clearTimeout(navigationTimer);
+      navigationTimer = null;
+    }
+    if (navigationMonitor !== null) {
+      clearInterval(navigationMonitor);
+      navigationMonitor = null;
+    }
+    navigationRunId = null;
   }
 
   function debugLog(...values) {
@@ -359,27 +372,10 @@
           searchUrl: pageUrl.href,
           lastActionAt: new Date().toISOString()
         });
-        if (navigationTimer !== null) {
-          clearTimeout(navigationTimer);
-          navigationTimer = null;
-        }
-        if (navigationMonitor !== null) {
-          clearInterval(navigationMonitor);
-          navigationMonitor = null;
-        }
+        clearNavigationWatch();
+        navigationRunId = runId;
 
         const startedUrl = currentUrl().href;
-        const clearNavigationWatch = () => {
-          if (navigationTimer !== null) {
-            clearTimeout(navigationTimer);
-            navigationTimer = null;
-          }
-          if (navigationMonitor !== null) {
-            clearInterval(navigationMonitor);
-            navigationMonitor = null;
-          }
-        };
-
         const pageAdvancedEnough = () => {
           const currentPageNumber = adapter.getCurrentPage(document, currentUrl());
           return Number.isInteger(currentPageNumber) && currentPageNumber >= nextPage;
@@ -460,20 +456,17 @@
       async onPage() {}
     };
 
+    let navigationPending = false;
     try {
-      await globalThis.JobCollectorRunLoop.run(adapter, context);
+      const result = await globalThis.JobCollectorRunLoop.run(adapter, context);
+      navigationPending = result.navigation === "navigated";
     } catch (error) {
       if (!(error instanceof NaukriStopError)) {
         await reportFailure(runId, error);
       }
     } finally {
-      if (navigationTimer !== null) {
-        clearTimeout(navigationTimer);
-        navigationTimer = null;
-      }
-      if (navigationMonitor !== null) {
-        clearInterval(navigationMonitor);
-        navigationMonitor = null;
+      if (!navigationPending) {
+        clearNavigationWatch();
       }
       spaResumeInProgress = false;
       if (activeRunId === runId) {
@@ -550,8 +543,9 @@
       return false;
     }
     if (message.type === "STOP_RUN") {
-      if (message.runId === activeRunId) {
+      if (message.runId === activeRunId || message.runId === navigationRunId) {
         stopRequested = true;
+        clearNavigationWatch();
       }
       sendResponse({ ok: true });
       return false;
