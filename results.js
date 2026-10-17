@@ -19,6 +19,7 @@ const elements = {
   linkedinSiteCount: document.getElementById("linkedin-site-count"),
   naukriSiteCount: document.getElementById("naukri-site-count"),
   easyTab: document.getElementById("easy-tab"),
+  directTab: document.getElementById("direct-tab"),
   companyTab: document.getElementById("company-tab"),
   panel: document.getElementById("results-panel"),
   columnHeadings: document.getElementById("column-headings"),
@@ -44,7 +45,6 @@ const elements = {
   skipped: document.getElementById("skipped-count"),
   feedback: document.getElementById("feedback")
 };
-const siteTitle = document.getElementById("site-title");
 const LAST_SITE_KEY = "ui.lastSite";
 
 let storageSnapshot = {
@@ -79,9 +79,6 @@ function configureSite(siteId) {
   TAB_LABELS = Object.fromEntries(adapter.ui.tabs.map((tab) => [tab.id, tab.label]));
   selectedTab = APPLY_TABS[0];
   document.title = `${adapter.label} Jobs`;
-  if (siteTitle) {
-    siteTitle.textContent = `${adapter.label} Jobs`;
-  }
   elements.applicantReviewFilter.closest("label").hidden = siteId !== "linkedin";
   elements.skipped.hidden = siteId !== "linkedin";
   elements.subtitle.hidden = siteId === "naukri";
@@ -93,7 +90,10 @@ function configureSite(siteId) {
     ? "Search jobs by role, company, hiring agency, or skills"
     : "Search jobs by role or company";
   elements.easyTab.hidden = false;
-  elements.companyTab.hidden = false;
+  elements.directTab.hidden = !adapter.ui.tabs.some((tab) => tab.id === "Direct Apply");
+  elements.companyTab.hidden = !adapter.ui.tabs.some((tab) => (
+    tab.id === "Company Apply" || tab.id === "Company Site"
+  ));
   elements.linkedinSite.setAttribute("aria-pressed", String(siteId === "linkedin"));
   elements.naukriSite.setAttribute("aria-pressed", String(siteId === "naukri"));
   document.body.dataset.site = siteId;
@@ -105,8 +105,26 @@ function configureSite(siteId) {
 }
 
 function renderTabLabels() {
-  elements.easyTab.textContent = `${TAB_LABELS[APPLY_TABS[0]]} (0)`;
-  elements.companyTab.textContent = `${TAB_LABELS[APPLY_TABS[1]]} (0)`;
+  for (const [index, tab] of APPLY_TABS.entries()) {
+    const button = getTabButton(tab, index);
+    button.hidden = false;
+    button.textContent = `${TAB_LABELS[tab]} (0)`;
+  }
+  for (const button of [elements.easyTab, elements.directTab, elements.companyTab]) {
+    if (!APPLY_TABS.some((tab, index) => getTabButton(tab, index) === button)) {
+      button.hidden = true;
+    }
+  }
+}
+
+function getTabButton(tab, index = APPLY_TABS.indexOf(tab)) {
+  if (tab === "Direct Apply") {
+    return elements.directTab;
+  }
+  if (tab === "Company Apply" || tab === "Company Site") {
+    return elements.companyTab;
+  }
+  return index === 0 ? elements.easyTab : elements.companyTab;
 }
 
 function renderHeaders() {
@@ -381,6 +399,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     <div class="toolbar">
       <div class="tabs" role="tablist" aria-label="Job application type">
         <button id="easy-tab" class="tab" type="button" role="tab" aria-selected="true" aria-controls="results-panel" tabindex="0">Easy Apply (0)</button>
+        <button id="direct-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1"${reportTabs.some((tab) => tab.id === "Direct Apply") ? "" : " hidden"}>Direct Apply (0)</button>
         <button id="company-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1">Company Apply (0)</button>
       </div>
       <div class="filters">
@@ -413,7 +432,13 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     const initiallyOpened = ${embeddedOpened};
     const tabs = ${embeddedTabs};
     const easyTab = document.getElementById("easy-tab");
+    const directTab = document.getElementById("direct-tab");
     const companyTab = document.getElementById("company-tab");
+    const buttonForTab = (tab, index) => tab.id === "Direct Apply"
+      ? directTab
+      : tab.id === "Company Apply" || tab.id === "Company Site"
+        ? companyTab
+        : index === 0 ? easyTab : companyTab;
     const body = document.getElementById("job-table-body");
     const search = document.getElementById("search");
     const applicantReviewFilter = document.getElementById("applicant-review-filter");
@@ -504,13 +529,16 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         }
         return result * direction;
       });
-      easyTab.textContent = tabs[0].label + " (" + records.filter((record) => record.tabId === tabs[0].id).length + ")";
-      companyTab.textContent = tabs[1].label + " (" + records.filter((record) => record.tabId === tabs[1].id).length + ")";
-      easyTab.setAttribute("aria-selected", String(selectedTab === tabs[0].id));
-      companyTab.setAttribute("aria-selected", String(selectedTab === tabs[1].id));
-      easyTab.tabIndex = selectedTab === tabs[0].id ? 0 : -1;
-      companyTab.tabIndex = selectedTab === tabs[1].id ? 0 : -1;
-      panel.setAttribute("aria-labelledby", selectedTab === tabs[0].id ? "easy-tab" : "company-tab");
+      for (const [index, tab] of tabs.entries()) {
+        const button = buttonForTab(tab, index);
+        button.textContent = tab.label + " (" + records.filter((record) => record.tabId === tab.id).length + ")";
+        button.setAttribute("aria-selected", String(selectedTab === tab.id));
+        button.tabIndex = selectedTab === tab.id ? 0 : -1;
+      }
+      panel.setAttribute("aria-labelledby", buttonForTab(
+        tabs.find((tab) => tab.id === selectedTab),
+        tabs.findIndex((tab) => tab.id === selectedTab)
+      ).id);
       document.body.dataset.activeTab = selectedTab;
       body.replaceChildren();
       visible.forEach((record, index) => {
@@ -615,28 +643,27 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
           ? "No jobs match this applicant-review filter."
           : hideOpened.checked && matched.length > 0
             ? "All matching jobs have been opened."
-            : selectedTab === tabs[0].id
-              ? "No " + tabs[0].label + " jobs captured yet."
-              : "No " + tabs[1].label + " jobs captured yet.";
+            : "No " + tabs.find((tab) => tab.id === selectedTab).label + " jobs captured yet.";
     };
     const selectTab = (tab) => {
       selectedTab = tab;
       try { localStorage.setItem(tabStorageKey, tab); } catch (_error) {}
       render();
     };
-    easyTab.addEventListener("click", () => selectTab(tabs[0].id));
-    companyTab.addEventListener("click", () => selectTab(tabs[1].id));
-    for (const [tab, button] of [[tabs[0].id, easyTab], [tabs[1].id, companyTab]]) {
+    for (const [index, item] of tabs.entries()) {
+      const button = buttonForTab(item, index);
+      button.addEventListener("click", () => selectTab(item.id));
       button.addEventListener("keydown", (event) => {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
-        const next = event.key === "Home"
-          ? tabs[0].id
+        const nextIndex = event.key === "Home"
+          ? 0
           : event.key === "End"
-            ? tabs[1].id
-            : tab === tabs[0].id ? tabs[1].id : tabs[0].id;
-        (next === tabs[0].id ? easyTab : companyTab).focus();
-        selectTab(next);
+            ? tabs.length - 1
+            : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        const next = tabs[nextIndex];
+        buttonForTab(next, nextIndex).focus();
+        selectTab(next.id);
       });
     }
     search.addEventListener("input", render);
@@ -650,9 +677,8 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         render();
       });
     }
-    const preferredTab = records.some((record) => record.tabId === tabs[0].id)
-      ? tabs[0].id
-      : tabs[1].id;
+    const preferredTab = tabs.find((tab) => records.some((record) => record.tabId === tab.id))?.id
+      || tabs[0].id;
     const savedTab = ${JSON.stringify(savedSelectedTab)};
     let persistedTab = savedTab;
     try {
@@ -1012,11 +1038,10 @@ function sortRecords(records) {
 function chooseInitialTab(records) {
   const storedTab = storageSnapshot.resultsSelectedTab;
   if (APPLY_TABS.includes(storedTab)) {
-    const otherTab = APPLY_TABS.find((tab) => tab !== storedTab);
     selectedTab = getRecordsForTab(records, storedTab).length > 0
-      || getRecordsForTab(records, otherTab).length === 0
+      || !APPLY_TABS.some((tab) => tab !== storedTab && getRecordsForTab(records, tab).length > 0)
       ? storedTab
-      : otherTab;
+      : APPLY_TABS.find((tab) => getRecordsForTab(records, tab).length > 0) || storedTab;
     return;
   }
   selectedTab = APPLY_TABS.find((tab) => getRecordsForTab(records, tab).length > 0)
@@ -1026,12 +1051,13 @@ function chooseInitialTab(records) {
 function render() {
   try {
     const records = getRecords();
-    const firstRecords = getRecordsForTab(records, APPLY_TABS[0]);
-    const secondRecords = getRecordsForTab(records, APPLY_TABS[1]);
+    const recordsByTab = Object.fromEntries(
+      APPLY_TABS.map((tab) => [tab, getRecordsForTab(records, tab)])
+    );
     const skippedCount = SITE_ID === "linkedin"
       ? records.filter((record) => record.applyType === "Unknown").length
       : 0;
-    const activeRecords = selectedTab === APPLY_TABS[0] ? firstRecords : secondRecords;
+    const activeRecords = recordsByTab[selectedTab] || [];
     const searchTerm = elements.search.value.trim().toLocaleLowerCase();
     const applicantReviewStatus = elements.applicantReviewFilter.value;
     const matchingRecords = activeRecords.filter((record) => (
@@ -1051,16 +1077,14 @@ function render() {
       || storageSnapshot.openedJobsById[String(record.jobId || "")] !== true
     )));
 
-    elements.easyTab.textContent = `${TAB_LABELS[APPLY_TABS[0]]} (${firstRecords.length})`;
-    elements.companyTab.textContent = `${TAB_LABELS[APPLY_TABS[1]]} (${secondRecords.length})`;
-    elements.easyTab.setAttribute("aria-selected", String(selectedTab === APPLY_TABS[0]));
-    elements.companyTab.setAttribute("aria-selected", String(selectedTab === APPLY_TABS[1]));
-    elements.easyTab.tabIndex = selectedTab === APPLY_TABS[0] ? 0 : -1;
-    elements.companyTab.tabIndex = selectedTab === APPLY_TABS[1] ? 0 : -1;
-    elements.panel.setAttribute(
-      "aria-labelledby",
-      selectedTab === APPLY_TABS[0] ? "easy-tab" : "company-tab"
-    );
+    for (const [index, tab] of APPLY_TABS.entries()) {
+      const button = getTabButton(tab, index);
+      button.textContent = `${TAB_LABELS[tab]} (${recordsByTab[tab].length})`;
+      button.setAttribute("aria-selected", String(selectedTab === tab));
+      button.tabIndex = selectedTab === tab ? 0 : -1;
+    }
+    const selectedButton = getTabButton(selectedTab);
+    elements.panel.setAttribute("aria-labelledby", selectedButton.id);
     document.body.dataset.activeTab = selectedTab;
     elements.total.textContent = `${records.length} ${records.length === 1 ? "job" : "jobs"}`;
     const runInfo = formatRunDate(storageSnapshot.collectorState);
@@ -1094,9 +1118,7 @@ function render() {
         ? "No jobs match this applicant-review filter."
       : elements.hideOpened.checked && matchingRecords.length > 0
         ? "All matching jobs have been opened."
-        : selectedTab === APPLY_TABS[0]
-          ? `No ${TAB_LABELS[APPLY_TABS[0]]} jobs captured yet.`
-          : `No ${TAB_LABELS[APPLY_TABS[1]]} jobs captured yet.`;
+        : `No ${TAB_LABELS[selectedTab]} jobs captured yet.`;
     if (!elements.feedback.textContent.startsWith("Could not")) {
       elements.feedback.textContent = "";
     }
@@ -1174,20 +1196,27 @@ function handleTabKeydown(event, tab) {
     return;
   }
   event.preventDefault();
-  const nextTab = event.key === "Home"
-    ? APPLY_TABS[0]
+  const currentIndex = APPLY_TABS.indexOf(tab);
+  const nextIndex = event.key === "Home"
+    ? 0
     : event.key === "End"
-      ? APPLY_TABS[1]
-      : tab === APPLY_TABS[0] ? APPLY_TABS[1] : APPLY_TABS[0];
-  const button = nextTab === APPLY_TABS[0] ? elements.easyTab : elements.companyTab;
+      ? APPLY_TABS.length - 1
+      : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + APPLY_TABS.length) % APPLY_TABS.length;
+  const nextTab = APPLY_TABS[nextIndex];
+  const button = getTabButton(nextTab, nextIndex);
   button.focus();
   void selectTab(nextTab);
 }
 
 elements.easyTab.addEventListener("click", () => selectTab(APPLY_TABS[0]));
-elements.companyTab.addEventListener("click", () => selectTab(APPLY_TABS[1]));
-elements.easyTab.addEventListener("keydown", (event) => handleTabKeydown(event, APPLY_TABS[0]));
-elements.companyTab.addEventListener("keydown", (event) => handleTabKeydown(event, APPLY_TABS[1]));
+elements.directTab.addEventListener("click", () => selectTab("Direct Apply"));
+elements.companyTab.addEventListener("click", () => {
+  const companyTab = APPLY_TABS.find((tab) => tab === "Company Apply" || tab === "Company Site");
+  if (companyTab) void selectTab(companyTab);
+});
+for (const [index, tab] of APPLY_TABS.entries()) {
+  getTabButton(tab, index).addEventListener("keydown", (event) => handleTabKeydown(event, tab));
+}
 elements.linkedinSite.addEventListener("click", () => {
   void switchSite("linkedin");
 });

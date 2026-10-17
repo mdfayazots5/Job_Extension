@@ -119,13 +119,13 @@ function createPage(storage, search = "") {
     || null;
   const ids = [
     "easy-tab",
+    "direct-tab",
     "company-tab",
     "linkedin-site",
     "naukri-site",
     "linkedin-site-count",
     "naukri-site-count",
     "site-switcher",
-    "site-title",
     "results-panel",
     "column-headings",
     "job-table-body",
@@ -437,7 +437,9 @@ async function run() {
     postedDateEstimate: "2026-09-26T12:00:00.000Z",
     postedApprox: true,
     postedType: "Posted",
-    applyType: "Naukri",
+    applyType: "Company Apply",
+    companyApplyJob: true,
+    applyRedirectUrl: "https://company.example/apply?job=021026012531",
     url: "https://www.naukri.com/job-listings-senior-021026012531"
   };
   const naukriConsultant = {
@@ -446,6 +448,10 @@ async function run() {
     title: "Platform Engineer",
     company: "Example Health",
     postedBy: "Talent & Co",
+    companyApplyJob: false,
+    applyRedirectUrl: null,
+    applyType: "Easy Apply",
+    questionnaireIdPresent: true,
     walkIn: false,
     walkInDates: null,
     skills: ["Node.js"],
@@ -458,18 +464,30 @@ async function run() {
     title: "Direct Hire Engineer",
     company: "Direct Company",
     postedBy: null,
+    companyApplyJob: true,
+    applyType: "Company Apply",
     walkIn: false,
     walkInDates: null,
     skills: ["Java"],
     postedApprox: false,
     url: "https://www.naukri.com/job-listings-direct-021026012533"
   };
+  const naukriDirect = {
+    ...naukriConsultant,
+    jobId: "021026012534",
+    title: "Direct Apply Engineer",
+    company: "Direct Applicant",
+    questionnaireIdPresent: false,
+    applyType: "Direct Apply",
+    url: "https://www.naukri.com/job-listings-direct-apply-021026012534"
+  };
   const naukriStorage = {
     records: {
       "linkedin:101": job("101", "Easy Apply"),
       "naukri:021026012531": naukriPrimary,
       "naukri:021026012532": naukriConsultant,
-      "naukri:021026012533": naukriCompany
+      "naukri:021026012533": naukriCompany,
+      "naukri:021026012534": naukriDirect
     },
     "opened.linkedin": { "101": true },
     "opened.naukri": {},
@@ -477,30 +495,39 @@ async function run() {
       runId: "naukri-view-run",
       state: "DONE",
       startedAt: "2026-10-17T10:00:00.000Z",
-      capturedCount: 3
+      capturedCount: 4
     },
-    "ui.naukri.selectedTab": "Consultant Jobs"
+    "ui.naukri.selectedTab": "Company Apply"
   };
   const linkedinRecordBeforeSiteSwitch = JSON.stringify(naukriStorage.records["linkedin:101"]);
   const naukriPage = createPage(naukriStorage, "?site=naukri");
   await settle();
-  assert.equal(naukriPage.elements.get("site-title").textContent, "Naukri Jobs");
+  assert.equal(naukriPage.elements.has("site-title"), false);
   assert.equal(naukriPage.storage["ui.lastSite"], "naukri");
   assert.equal(naukriPage.elements.get("linkedin-site-count").textContent, "1");
-  assert.equal(naukriPage.elements.get("naukri-site-count").textContent, "3");
+  assert.equal(naukriPage.elements.get("naukri-site-count").textContent, "4");
   assert.ok(naukriPage.elements.get("linkedin-site").className.includes("is-empty") === false);
   assert.deepEqual(
     naukriPage.elements.get("column-headings").children.map((heading) => heading.textContent),
     ["#", "Role", "Company", "Location", "Exp", "Salary", "Posted↓", "Apply"]
   );
-  assert.equal(naukriPage.elements.get("easy-tab").textContent, "Company Jobs (1)");
-  assert.equal(naukriPage.elements.get("company-tab").textContent, "Consultant Jobs (2)");
+  assert.equal(naukriPage.elements.get("easy-tab").textContent, "Easy Apply (1)");
+  assert.equal(naukriPage.elements.get("direct-tab").textContent, "Direct Apply (1)");
+  assert.equal(naukriPage.elements.get("company-tab").textContent, "Company Apply (2)");
   assert.match(naukriPage.elements.get("search").placeholder, /agency, or skills/);
   assert.ok(naukriPage.elements.get("run-subtitle").hidden);
   assert.equal(naukriPage.elements.get("site-run-footer").hidden, false);
-  assert.match(naukriPage.elements.get("site-run-footer").textContent, /3 captured/);
+  assert.match(naukriPage.elements.get("site-run-footer").textContent, /4 captured/);
   let naukriRows = naukriPage.elements.get("job-table-body").children;
   assert.equal(naukriRows.length, 2);
+  assert.equal(naukriPage.elements.get("direct-tab").hidden, false);
+  await naukriPage.elements.get("direct-tab").dispatch("click");
+  assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
+  assert.match(
+    findAll(naukriPage.elements.get("job-table-body").children[0], (item) => item.className === "role-title")[0].textContent,
+    /Direct Apply Engineer/
+  );
+  await naukriPage.elements.get("company-tab").dispatch("click");
   assert.equal(
     findAll(naukriRows[0], (item) => item.className === "role-title")[0].textContent,
     "<Senior & Staff Engineer>"
@@ -510,6 +537,10 @@ async function run() {
   ));
   assert.equal(findAll(specialRow, (item) => item.className === "company-name")[0].textContent, "R&D <Systems>");
   assert.equal(findAll(specialRow, (item) => item.className === "posted-by")[0].textContent, "via Talent & Co");
+  assert.equal(
+    findAll(specialRow, (item) => item.className === "apply-link")[0].href,
+    "https://company.example/apply?job=021026012531"
+  );
   assert.equal(findAll(specialRow, (item) => item.className === "work-mode-chip")[0].textContent, "Hybrid");
   assert.equal(findAll(specialRow, (item) => item.className === "walk-in-badge")[0].textContent, "Walk-in");
   assert.equal(findAll(specialRow, (item) => item.className === "walk-in-dates")[0].textContent, "03 Oct - 24 Oct");
@@ -517,7 +548,7 @@ async function run() {
   assert.match(approximateDate.textContent, /^~/);
   assert.match(approximateDate.attributes.title, /Approximate date/);
   const naukriApply = findAll(specialRow, (item) => item.className === "apply-link")[0];
-  assert.equal(naukriApply.href, naukriPrimary.url);
+  assert.equal(naukriApply.href, naukriPrimary.applyRedirectUrl);
   assert.equal(naukriApply.target, "_blank");
   assert.equal(naukriApply.rel, "noopener noreferrer");
   await naukriApply.dispatch("click");
@@ -546,14 +577,14 @@ async function run() {
     .includes("<Senior & Staff Engineer>"), true);
   naukriPage.elements.get("search").value = "Talent & Co";
   await naukriPage.elements.get("search").dispatch("input");
-  assert.equal(naukriPage.elements.get("job-table-body").children.length, 2);
+  assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
   naukriPage.elements.get("search").value = "";
   await naukriPage.elements.get("company-sort").dispatch("click");
   assert.equal(
     findAll(naukriPage.elements.get("job-table-body").children[0], (item) => (
       item.className === "company-name"
     ))[0].textContent,
-    "Example Health"
+    "Direct Company"
   );
   await naukriPage.elements.get("linkedin-site").dispatch("click");
   await settle();
@@ -568,7 +599,7 @@ async function run() {
     "opened.naukri": {}
   });
   await settle();
-  assert.equal(rememberedNaukriPage.elements.get("site-title").textContent, "Naukri Jobs");
+  assert.equal(rememberedNaukriPage.elements.has("site-title"), false);
 
   const zeroStorage = {
     jobsById: {},
@@ -664,6 +695,8 @@ async function run() {
   const popupHtml = fs.readFileSync("popup.html", "utf8");
   const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
   assert.doesNotMatch(popupHtml, /copy-diagnostics|Copy flow log/i);
+  assert.doesNotMatch(popupHtml, /Enable flow logs|Disable flow logs|flow-logging|flow-log-details/i);
+  assert.doesNotMatch(fs.readFileSync("popup.js", "utf8"), /toggleFlowLogging|NAUKRI_SET_FLOW_LOGGING/);
   assert.deepEqual(manifest.permissions, ["storage", "scripting", "tabs", "alarms"]);
 }
 

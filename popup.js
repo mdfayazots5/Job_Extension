@@ -83,10 +83,6 @@ async function refreshStorageSnapshot() {
       storageKeys.budget,
       storageKeys.cooldown
     ]);
-    const title = document.getElementById("site-title");
-    if (title) {
-      title.textContent = `${adapter.label} Jobs`;
-    }
     document.getElementById("view-results").href =
       `results.html?site=${encodeURIComponent(activeSiteId)}`;
     renderFromStorage();

@@ -190,6 +190,15 @@ async function testNaukriBackground() {
   const background = context.JobCollectorNaukriBackground;
   await background.initialize();
 
+  const loggingEnabled = await background.handleMessage({
+    type: "NAUKRI_SET_FLOW_LOGGING",
+    siteId: "naukri",
+    enabled: true
+  }, { id: chrome.runtime.id });
+  assert.equal(loggingEnabled.enabled, true);
+  assert.equal(store["debug.naukri"], true);
+  assert.equal(store["debug.linkedin"], undefined);
+
   store["runs.linkedin"] = {
     state: "RUNNING",
     siteId: "linkedin",
@@ -201,6 +210,10 @@ async function testNaukriBackground() {
   );
   store["runs.linkedin"].state = "DONE";
   store["cooldown.linkedin"] = { until: Date.now() + 24 * 60 * 60 * 1000 };
+  store["diagnostics.naukri"] = [
+    { at: new Date().toISOString(), flow: true, event: "previous-run-entry" },
+    { at: new Date().toISOString(), event: "previous-run-diagnostic" }
+  ];
 
   await background.handleMessage(
     { type: "START_RUN", siteId: "naukri" },
@@ -210,6 +223,10 @@ async function testNaukriBackground() {
   assert.equal(state.state, "RUNNING");
   assert.equal(state.siteId, "naukri");
   assert.equal(state.tabId, 17);
+  assert.deepEqual(
+    store["diagnostics.naukri"].map((entry) => entry.event),
+    ["previous-run-diagnostic", "run-start"]
+  );
 
   const capturedRecord = {
     siteId: "naukri",
@@ -221,6 +238,18 @@ async function testNaukriBackground() {
     pageNumber: 1
   };
   const sender = { id: chrome.runtime.id, tab: { id: 17 } };
+  await background.handleMessage({
+    type: "NAUKRI_FLOW_LOG",
+    siteId: "naukri",
+    runId: state.runId,
+    event: "test-flow-event",
+    details: { pageNumber: 1 }
+  }, sender);
+  assert.ok(store["diagnostics.naukri"].some((entry) => (
+    entry.flow === true
+    && entry.event === "test-flow-event"
+    && entry.details.pageNumber === 1
+  )));
   const saved = await background.handleMessage({
     type: "SAVE_CAPTURE",
     siteId: "naukri",
@@ -234,9 +263,20 @@ async function testNaukriBackground() {
     type: "SAVE_CAPTURE",
     siteId: "naukri",
     runId: state.runId,
-    record: capturedRecord
+    record: {
+      ...capturedRecord,
+      companyApplyJob: true,
+      applyRedirectUrl: "https://company.example/apply?id=123456789012"
+    }
   }, sender);
   assert.equal(duplicate.saved, false);
+  assert.equal(store.records["naukri:123456789012"].companyApplyJob, true);
+  assert.equal(store.records["naukri:123456789012"].applyType, "Company Apply");
+  assert.equal(
+    store.records["naukri:123456789012"].applyRedirectUrl,
+    "https://company.example/apply?id=123456789012"
+  );
+  assert.equal(store["budgets.naukri"].jobsToday, 1);
 
   const searchUrl = "https://www.naukri.com/dot-net-developer-jobs";
   await background.handleMessage({
@@ -277,10 +317,10 @@ async function testNaukriBackground() {
     capturedCount: 1
   }, sender);
   assert.equal(store["runs.naukri"].state, "DONE");
-  assert.equal(store["runs.naukri"].pageNumber, 0);
-  assert.equal(store["runs.naukri"].capturedCount, 0);
-  assert.equal(store["runs.naukri"].resultsOpened, false);
-  assert.equal(createdTabs.length, 0);
+  assert.equal(store["runs.naukri"].pageNumber, 2);
+  assert.equal(store["runs.naukri"].capturedCount, 1);
+  assert.equal(store["runs.naukri"].resultsOpened, true);
+  assert.equal(createdTabs.length, 1);
 
   await background.handleMessage({ type: "START_RUN", siteId: "naukri" }, { id: chrome.runtime.id });
   state = store["runs.naukri"];
@@ -322,11 +362,11 @@ async function testNaukriBackground() {
     siteId: "naukri"
   }, { id: chrome.runtime.id });
   assert.equal(store["runs.naukri"].state, "STOPPED");
-  assert.equal(store["runs.naukri"].pageNumber, 0);
-  assert.equal(store["runs.naukri"].capturedCount, 0);
+  assert.equal(store["runs.naukri"].pageNumber, 1);
+  assert.equal(store["runs.naukri"].capturedCount, 1);
   assert.ok(store.records["naukri:123456789013"]);
-  assert.equal(store["runs.naukri"].resultsOpened, false);
-  assert.equal(createdTabs.length, 0);
+  assert.equal(store["runs.naukri"].resultsOpened, true);
+  assert.equal(createdTabs.length, 2);
 
   await background.handleMessage({ type: "START_RUN", siteId: "naukri" }, { id: chrome.runtime.id });
   state = store["runs.naukri"];
@@ -341,14 +381,14 @@ async function testNaukriBackground() {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(store["runs.naukri"].state, "ERROR");
   assert.equal(store["runs.naukri"].lastError, "page_load_failed");
-  assert.equal(store["runs.naukri"].pageNumber, 0);
+  assert.equal(store["runs.naukri"].pageNumber, 2);
   assert.equal(store["runs.naukri"].capturedCount, 0);
 
   await assert.rejects(
     background.handleMessage({ type: "STOP_RUN", siteId: "naukri" }, { id: chrome.runtime.id }),
     /There is no active Naukri run to stop/
   );
-  console.log("PASS Naukri background: site lock, dedupe/budget, persisted navigation, tab-verified resume, cooldown, terminal reset, and page-load timeout.");
+  console.log("PASS Naukri background: site lock, dedupe/budget, persisted navigation, tab-verified resume, cooldown, retained terminal progress, and page-load timeout.");
 }
 
 Promise.resolve()

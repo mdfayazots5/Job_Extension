@@ -83,6 +83,44 @@ assertExpectedRecord("100826024367", {
 });
 assertExpectedRecord("100625501151", { postedApprox: true });
 
+const modernHtml = `<div class="jobTuple" data-job-id="modern-1">
+  <div class="jobTuple-title"><a href="/job-listings-modern-role-123?src=fixture">Modern .NET Developer</a></div>
+  <div class="companyName">Modern Systems</div>
+  <div class="postedBy">Posted by Modern Consult</div>
+  <img class="companyLogo" src="/images/logo.png">
+  <div class="experience"><span>3-5 Yrs</span></div>
+  <div class="salary"><span>10-15 Lacs PA</span></div>
+  <div class="location"><span title="Hybrid - Hyderabad, Bengaluru">Hybrid - Hyderabad, Bengaluru</span></div>
+  <ul class="keySkills"><li>ASP.NET</li><li>SQL</li></ul>
+  <div class="posted-date">2 days ago</div>
+</div>`;
+const modernRecord = adapter.parsePage({ doc: new JSDOM(modernHtml).window.document, capturedAt })[0];
+check("modern card title is parsed", modernRecord.title, "Modern .NET Developer", modernRecord.title);
+check("modern card company is parsed", modernRecord.company, "Modern Systems", modernRecord.company);
+check("modern card postedBy is parsed", modernRecord.postedBy, "Modern Consult", modernRecord.postedBy);
+check("modern card experience is parsed", modernRecord.experience, "3-5 Yrs", modernRecord.experience);
+check("modern card work mode and locations are parsed", { workMode: modernRecord.workMode, locations: modernRecord.locations }, { workMode: "Hybrid", locations: ["Hyderabad", "Bengaluru"] }, modernRecord.locationRaw);
+check("modern card salary is parsed", modernRecord.salary, "10-15 Lacs PA", modernRecord.salary);
+check("modern card skill list is parsed", modernRecord.skills, ["ASP.NET", "SQL"], modernRecord.skills);
+check("modern card posted date is estimated", modernRecord.postedDateEstimate, "2026-10-15T10:32:40.983Z", modernRecord.postedText);
+const cardFlagRecords = adapter.parsePage({
+  doc: new JSDOM(`
+    <div class="srp-jobtuple-wrapper" data-job-id="company" data-company-apply-job="true">
+      <a class="title" href="/company-job">Company apply role</a>
+    </div>
+    <div class="srp-jobtuple-wrapper" data-job-id="easy" data-company-apply-job="false">
+      <a class="title" href="/easy-job">Easy apply role</a>
+    </div>
+  `).window.document,
+  capturedAt
+});
+check(
+  "companyApplyJob flags already on result cards are captured",
+  cardFlagRecords.map((record) => record.companyApplyJob),
+  [true, false],
+  cardFlagRecords
+);
+
 const syntheticHtml = `<div class="srp-jobtuple-wrapper" data-job-id="synthetic-1">
   <a class="title" href="/job-listings-role-123?tracking=ignored">Synthetic Role</a>
   <div class="comp-name">Example Company</div>
@@ -124,9 +162,112 @@ check("N+ weeks is approximate", synthetic.postedApprox, true, synthetic.postedT
 check("N+ weeks is estimated from capture time", synthetic.postedDateEstimate, "2026-10-10T10:32:40.983Z", synthetic.postedText);
 check("posted type is Posted", synthetic.postedType, "Posted", synthetic.postedType);
 check("apply type is Naukri", synthetic.applyType, "Naukri", synthetic.applyType);
-check("consultant tab classification", adapter.ui.tabFor(synthetic), "Consultant Jobs", synthetic.postedBy);
-check("company tab classification", adapter.ui.tabFor({ postedBy: null }), "Company Jobs", null);
+check("missing API flag stays unclassified in raw record", synthetic.companyApplyJob, null, synthetic.companyApplyJob);
+check("false companyApplyJob maps to Easy Apply", adapter.ui.tabFor({ companyApplyJob: false }), "Easy Apply", false);
+check("true companyApplyJob maps to Company Apply", adapter.ui.tabFor({ companyApplyJob: true }), "Company Apply", true);
+check(
+  "questionnaireIdPresent true maps to Easy Apply",
+  adapter.ui.tabFor({ companyApplyJob: false, questionnaireIdPresent: true }),
+  "Easy Apply",
+  true
+);
+check(
+  "questionnaireIdPresent false maps to Direct Apply",
+  adapter.ui.tabFor({ companyApplyJob: false, questionnaireIdPresent: false }),
+  "Direct Apply",
+  false
+);
+check(
+  "company application takes precedence over questionnaire presence",
+  adapter.ui.tabFor({ companyApplyJob: true, questionnaireIdPresent: true }),
+  "Company Apply",
+  "companyApplyJob=true"
+);
+check(
+  "Naukri exposes Easy, Direct, and Company Apply tabs",
+  adapter.ui.tabs.map((tab) => tab.id),
+  ["Easy Apply", "Direct Apply", "Company Apply"],
+  adapter.ui.tabs
+);
 check("apply URL is the record URL", adapter.ui.applyUrl(synthetic), synthetic.url, synthetic.url);
+check(
+  "Company Apply uses Naukri's applyRedirectUrl",
+  adapter.ui.applyUrl({
+    ...synthetic,
+    companyApplyJob: true,
+    applyType: "Company Apply",
+    applyRedirectUrl: "https://company.example/apply?job=123&source=naukri"
+  }),
+  "https://company.example/apply?job=123&source=naukri",
+  "applyRedirectUrl"
+);
+check(
+  "invalid applyRedirectUrl falls back to the job listing",
+  adapter.ui.applyUrl({
+    ...synthetic,
+    companyApplyJob: true,
+    applyRedirectUrl: "javascript:alert(1)"
+  }),
+  synthetic.url,
+  "unsafe applyRedirectUrl"
+);
+check(
+  "API apply flags and redirect URLs are indexed by job ID",
+  adapter.parseApplicationDetails({
+    jobDetails: [
+      {
+        jobId: "1001",
+        companyApplyJob: true,
+        questionnaireIdPresent: false,
+        applyRedirectUrl: "https://company.example/apply?id=1001"
+      },
+      { jobId: "1002", companyApplyJob: false, questionnaireIdPresent: true },
+      { jobId: "1003", companyApplyJob: false, questionnaireIdPresent: false }
+    ]
+  }),
+  {
+    "1001": {
+      companyApplyJob: true,
+      questionnaireIdPresent: false,
+      applyRedirectUrl: "https://company.example/apply?id=1001"
+    },
+    "1002": {
+      companyApplyJob: false,
+      questionnaireIdPresent: true,
+      applyRedirectUrl: null
+    },
+    "1003": {
+      companyApplyJob: false,
+      questionnaireIdPresent: false,
+      applyRedirectUrl: null
+    }
+  },
+  "jobDetails"
+);
+assert.throws(
+  () => adapter.parseApplicationDetails({ jobDetails: [{ jobId: "1003" }] }),
+  /missing the companyApplyJob flag/
+);
+assert.throws(
+  () => adapter.parseApplicationDetails({}),
+  /does not contain a jobDetails list/
+);
+check(
+  "normalized API record retains apply classification",
+  adapter.normalize({ jobId: "1004", companyApplyJob: true }).applyType,
+  "Company Apply",
+  "companyApplyJob=true"
+);
+check(
+  "normalized questionnaire response retains Direct Apply classification",
+  adapter.normalize({
+    jobId: "1005",
+    companyApplyJob: false,
+    questionnaireIdPresent: false
+  }).applyType,
+  "Direct Apply",
+  "questionnaireIdPresent=false"
+);
 
 const noSalaryHtml = `<div class="srp-jobtuple-wrapper" data-job-id="salary-null">
   <a class="title" href="/job">Role</a>
