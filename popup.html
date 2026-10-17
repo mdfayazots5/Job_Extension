@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LinkedIn Jobs</title>
+    <style>
+      :root { color-scheme: light dark; font: 14px system-ui, sans-serif; }
+      body { box-sizing: border-box; margin: 0; min-width: 280px; padding: 16px; }
+      h1 { font-size: 17px; margin: 0 0 14px; }
+      .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+      button { border: 0; border-radius: 7px; cursor: pointer; font: inherit; padding: 8px 14px; }
+      button:focus-visible, a:focus-visible { outline: 3px solid #4387ff; outline-offset: 2px; }
+      #start { background: #0a66c2; color: #fff; }
+      #stop { background: #b73a4b; color: #fff; }
+      button:disabled { cursor: not-allowed; opacity: .5; }
+      .status { display: grid; gap: 5px; margin: 14px 0; }
+      .status p { margin: 0; }
+      #budget-status { color: #515d69; font-size: 12px; line-height: 1.45; }
+      #notice { color: #666; min-height: 1.25em; }
+      a { color: #0a66c2; }
+      @media (prefers-color-scheme: dark) {
+        #notice { color: #bbb; }
+        #budget-status { color: #c1cad2; }
+        a { color: #76b6ff; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 id="site-title">Jobs Collector</h1>
+      <section class="controls" aria-label="Collector controls">
+        <button id="start" type="button">Start</button>
+        <button id="stop" type="button">Stop</button>
+      </section>
+      <section class="status" aria-label="Collector status">
+        <p>State: <output id="state">IDLE</output></p>
+        <p>Page: <output id="current-page">—</output> / <output id="max-pages">—</output></p>
+        <p>Jobs this run: <output id="captured-count">0</output> / <output id="max-jobs">—</output></p>
+        <p>Jobs today: <output id="jobs-today">0</output> / <output id="max-jobs-today">—</output></p>
+        <p id="budget-status" aria-live="polite"></p>
+        <p id="notice" role="status" aria-live="polite">No jobs captured</p>
+      </section>
+      <a id="view-results" href="results.html" target="_blank" rel="noopener noreferrer">View results</a>
+    </main>
+    <script src="config.js"></script>
+    <script src="src/core/storage.js"></script>
+    <script src="src/sites/linkedin/selectors.js"></script>
+    <script src="src/sites/linkedin/metadata.js"></script>
+    <script src="src/sites/linkedin/adapter.js"></script>
+    <script src="src/sites/naukri/config.js"></script>
+    <script src="src/sites/naukri/selectors.js"></script>
+    <script src="src/sites/naukri/adapter.js"></script>
+    <script src="src/sites/registry.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

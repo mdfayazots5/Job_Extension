@@ -1,0 +1,10 @@
+{
+  "name": "joblink",
+  "private": true,
+  "scripts": {
+    "test:naukri": "node tests/naukri-adapter.test.js && node tests/naukri-runtime.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}
