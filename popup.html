@@ -38,6 +38,7 @@
         <p>Page: <output id="current-page">—</output> / <output id="max-pages">—</output></p>
         <p>Jobs this run: <output id="captured-count">0</output> / <output id="max-jobs">—</output></p>
         <p>Jobs today: <output id="jobs-today">0</output> / <output id="max-jobs-today">—</output></p>
+        <p id="skipped-status" hidden></p>
         <p id="budget-status" aria-live="polite"></p>
         <p id="notice" role="status" aria-live="polite">No jobs captured</p>
       </section>
@@ -51,6 +52,10 @@
     <script src="src/sites/naukri/config.js"></script>
     <script src="src/sites/naukri/selectors.js"></script>
     <script src="src/sites/naukri/adapter.js"></script>
+    <script src="src/sites/indeed/config.js"></script>
+    <script src="src/sites/indeed/selectors.js"></script>
+    <script src="src/sites/indeed/parse.js"></script>
+    <script src="src/sites/indeed/adapter.js"></script>
     <script src="src/sites/registry.js"></script>
     <script src="popup.js"></script>
   </body>

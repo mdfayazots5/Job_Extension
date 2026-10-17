@@ -11,6 +11,7 @@ const elements = {
   jobsToday: document.getElementById("jobs-today"),
   maxJobsToday: document.getElementById("max-jobs-today"),
   budgetStatus: document.getElementById("budget-status"),
+  skippedStatus: document.getElementById("skipped-status"),
   notice: document.getElementById("notice")
 };
 
@@ -18,6 +19,13 @@ let storageSnapshot = {};
 let activeSiteId = null;
 let activeAdapter = null;
 let storageKeys = null;
+
+function isObsoleteIndeedLimitNotice(notice) {
+  return activeSiteId === "indeed"
+    && notice
+    && typeof notice.text === "string"
+    && /^Indeed (?:per-run|daily) job limit reached\.?$/i.test(notice.text.trim());
+}
 
 function renderFromStorage() {
   const runState = storageKeys ? storageSnapshot[storageKeys.runState] || {} : {};
@@ -36,10 +44,18 @@ function renderFromStorage() {
   elements.maxJobs.textContent = String(config.maxJobsPerRun);
   elements.jobsToday.textContent = String(budget.jobsToday || 0);
   elements.maxJobsToday.textContent = String(config.maxJobsPerDay);
-  elements.start.disabled = !activeSiteId || active || Boolean(runState.resultsOpening) || Boolean(nextAllowed);
+  elements.skippedStatus.hidden = activeSiteId !== "indeed";
+  if (activeSiteId === "indeed") {
+    elements.skippedStatus.textContent =
+      `Skipped: ${Number(runState.skippedAppliedCount) || 0} applied, ${Number(runState.skippedExpiredCount) || 0} expired`;
+  }
+  elements.start.disabled = !activeSiteId
+    || active
+    || Boolean(runState.resultsOpening)
+    || Boolean(nextAllowed);
   elements.stop.disabled = !activeSiteId || !active;
-  elements.budgetStatus.textContent = nextAllowed || "";
-  elements.notice.textContent = notice.text
+  elements.budgetStatus.textContent = nextAllowed.startsWith("Wait until ") ? "" : nextAllowed;
+  elements.notice.textContent = (isObsoleteIndeedLimitNotice(notice) ? "" : notice.text)
     || (runState.capturedCount ? "" : "No jobs captured");
 }
 
@@ -52,6 +68,13 @@ function getBudgetBlockReason(budget, config, now = Date.now()) {
     const tomorrow = new Date();
     tomorrow.setHours(24, 0, 0, 0);
     return `Daily job cap reached. Start available after ${tomorrow.toLocaleString()}.`;
+  }
+  if (
+    activeSiteId === "indeed"
+    && budget.dayKey === dayKey
+    && Number(budget.runsToday || 0) >= activeAdapter.limits.maxRunsPerDay
+  ) {
+    return `Daily Indeed run cap reached (${budget.runsToday}/${activeAdapter.limits.maxRunsPerDay}).`;
   }
   const cooldown = storageKeys ? storageSnapshot[storageKeys.cooldown] : null;
   if (cooldown && Number.isFinite(cooldown.until) && cooldown.until > now) {
@@ -73,7 +96,15 @@ async function refreshStorageSnapshot() {
       : null;
     if (!storageKeys) {
       storageSnapshot = {};
-      elements.notice.textContent = "Open a LinkedIn or Naukri search results page.";
+      let host = "";
+      try {
+        host = new URL(tab && tab.url || "").hostname;
+      } catch (_error) {
+        host = "";
+      }
+      elements.notice.textContent = host === "in.indeed.com"
+        ? "Open an Indeed /jobs search page with q= and #mosaic-provider-jobcards."
+        : "Open a LinkedIn, Naukri, or Indeed search results page.";
       renderFromStorage();
       return;
     }
@@ -83,6 +114,18 @@ async function refreshStorageSnapshot() {
       storageKeys.budget,
       storageKeys.cooldown
     ]);
+    if (isObsoleteIndeedLimitNotice(storageSnapshot[storageKeys.notice])) {
+      const latestNotice = await chrome.storage.local.get(storageKeys.notice);
+      if (isObsoleteIndeedLimitNotice(latestNotice[storageKeys.notice])) {
+        const clearedNotice = {
+          text: "",
+          kind: "info",
+          updatedAt: new Date().toISOString()
+        };
+        await chrome.storage.local.set({ [storageKeys.notice]: clearedNotice });
+        storageSnapshot[storageKeys.notice] = clearedNotice;
+      }
+    }
     document.getElementById("view-results").href =
       `results.html?site=${encodeURIComponent(activeSiteId)}`;
     renderFromStorage();
@@ -96,7 +139,7 @@ async function refreshStorageSnapshot() {
 async function sendAction(type) {
   try {
     if (!activeSiteId) {
-      elements.notice.textContent = "Open a LinkedIn or Naukri search results page.";
+      elements.notice.textContent = "Open a LinkedIn, Naukri, or Indeed search results page.";
       return;
     }
     const response = await chrome.runtime.sendMessage({ type, siteId: activeSiteId });

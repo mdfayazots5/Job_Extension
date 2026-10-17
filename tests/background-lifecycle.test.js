@@ -175,6 +175,8 @@ async function run() {
     resultsSelectedTab: "Company Site"
   });
   store["cooldown.naukri"] = { until: Date.now() + 24 * 60 * 60 * 1000 };
+  store["cooldown.indeed"] = { until: Date.now() + 24 * 60 * 60 * 1000 };
+  store["killswitch.indeed"] = { triggerCount: 3 };
   await vm.runInContext("handleStart()", context);
   assert.equal(Object.keys(store.jobsById).length, 0);
   assert.equal(Object.keys(store.openedJobsById).length, 0);
@@ -182,6 +184,7 @@ async function run() {
   assert.equal(store.collectorState.state, "RUNNING");
   assert.equal(store.collectorState.capturedCount, 0);
   assert.equal(store.resultsSelectedTab, "Company Site");
+  assert.equal(store["cooldown.indeed"].until > Date.now(), true);
   await vm.runInContext("progressQueue", context);
   await assert.rejects(vm.runInContext("handleStart()", context), /already active/);
 
@@ -455,6 +458,8 @@ async function run() {
   assert.equal(store.collectorState.state, "ERROR");
   assert.ok(store["cooldown.linkedin"].until > Date.now());
   assert.equal(store["killswitch.linkedin"].triggerCount, 1);
+  assert.equal(store["cooldown.indeed"].until > Date.now(), true);
+  assert.deepEqual(store["killswitch.indeed"], { triggerCount: 3 });
   assert.equal(store.collectorState.resultsOpened, true);
   store["cooldown.linkedin"].until = 0;
   await vm.runInContext("handleStart()", context);

@@ -3,7 +3,8 @@
 (function initializeJobCollectorSiteRegistry(global) {
   const adapters = Object.freeze([
     global.JobCollectorLinkedInAdapter,
-    global.JobCollectorNaukriAdapter
+    global.JobCollectorNaukriAdapter,
+    global.JobCollectorIndeedAdapter
   ].filter(Boolean));
 
   function getAdapterForUrl(value) {

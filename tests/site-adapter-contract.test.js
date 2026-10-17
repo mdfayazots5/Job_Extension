@@ -37,9 +37,14 @@ load(active, [
 assertAdapterContract(active.JobCollectorLinkedInAdapter);
 assertAdapterContract(active.JobCollectorNaukriAdapter);
 
-const indeed = vm.createContext({});
-load(indeed, ["src/sites/indeed/selectors.js", "src/sites/indeed/adapter.js"]);
-assert.equal(indeed.JobCollectorIndeedAdapter.id, "indeed");
-assert.equal(indeed.JobCollectorIndeedAdapter.label, "Indeed");
-assert.throws(() => indeed.JobCollectorIndeedAdapter.matchesUrl(new URL("https://indeed.example/")), /not implemented/);
-console.log("Site adapter contract tests passed: active adapters conform; Indeed is an expected unimplemented stub.");
+const indeed = vm.createContext({ URL, location: { origin: "https://in.indeed.com" } });
+load(indeed, [
+  "src/sites/indeed/config.js",
+  "src/sites/indeed/selectors.js",
+  "src/sites/indeed/parse.js",
+  "src/sites/indeed/adapter.js"
+]);
+assertAdapterContract(indeed.JobCollectorIndeedAdapter);
+assert.equal(indeed.JobCollectorIndeedAdapter.matchesUrl(new URL("https://in.indeed.com/jobs?q=engineer")), true);
+assert.equal(indeed.JobCollectorIndeedAdapter.matchesUrl(new URL("https://in.indeed.com/viewjob?jk=0123456789abcdef")), false);
+console.log("Site adapter contract tests passed: LinkedIn, Naukri, and Indeed conform.");

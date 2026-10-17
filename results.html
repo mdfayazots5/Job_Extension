@@ -16,6 +16,9 @@
         <button id="naukri-site" class="site-choice" type="button" aria-pressed="false">
           Naukri <span id="naukri-site-count" class="site-count">0</span>
         </button>
+        <button id="indeed-site" class="site-choice" type="button" aria-pressed="false">
+          Indeed <span id="indeed-site-count" class="site-count">0</span>
+        </button>
       </nav>
       <header class="page-header">
         <p id="run-subtitle" class="subtitle">Loading collection…</p>
@@ -67,6 +70,14 @@
             <input id="hide-opened" type="checkbox">
             <span>Hide opened</span>
           </label>
+          <label id="hide-visited-control" class="hide-opened-control" hidden>
+            <input id="hide-visited" type="checkbox">
+            <span>Hide visited</span>
+          </label>
+          <label id="hide-sponsored-control" class="hide-opened-control" hidden>
+            <input id="hide-sponsored" type="checkbox" checked>
+            <span>Hide sponsored</span>
+          </label>
         </div>
       </div>
 
@@ -88,6 +99,9 @@
       </section>
       <p id="skipped-count" class="skipped-count">0 skipped (no apply option)</p>
       <p id="site-run-footer" class="site-run-footer" hidden></p>
+      <p id="indeed-skipped-footer" class="site-run-footer" hidden></p>
+      <p id="dates-footer" class="site-run-footer" hidden></p>
+      <p id="parse-warning-footer" class="site-run-footer" hidden></p>
       <p id="feedback" class="feedback" role="status" aria-live="polite"></p>
     </main>
     <script src="config.js"></script>
@@ -98,6 +112,10 @@
     <script src="src/sites/naukri/config.js"></script>
     <script src="src/sites/naukri/selectors.js"></script>
     <script src="src/sites/naukri/adapter.js"></script>
+    <script src="src/sites/indeed/config.js"></script>
+    <script src="src/sites/indeed/selectors.js"></script>
+    <script src="src/sites/indeed/parse.js"></script>
+    <script src="src/sites/indeed/adapter.js"></script>
     <script src="src/sites/registry.js"></script>
     <script src="results.js"></script>
   </body>

@@ -12,8 +12,13 @@ importScripts(
   "src/sites/naukri/config.js",
   "src/sites/naukri/selectors.js",
   "src/sites/naukri/adapter.js",
+  "src/sites/indeed/config.js",
+  "src/sites/indeed/selectors.js",
+  "src/sites/indeed/parse.js",
+  "src/sites/indeed/adapter.js",
   "src/sites/registry.js",
   "src/sites/naukri/background.js",
+  "src/sites/indeed/background.js",
   "src/core/run-loop.js"
 );
 
@@ -88,8 +93,17 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function activeRunMessage(run) {
+  const siteLabel = run && run.siteId === "indeed"
+    ? "Indeed"
+    : run && run.siteId === "naukri"
+      ? "Naukri"
+      : "LinkedIn";
+  return `A collector run is already active (RUNNING on ${siteLabel}). Stop it before starting another site.`;
+}
+
 function isSearchResultsUrl(value) {
-  return Boolean(globalThis.JobCollectorSiteRegistry.getAdapterForUrl(value));
+  return SITE_ADAPTER.matchesUrl(new URL(value));
 }
 
 function isBlockingUrl(value) {
@@ -653,7 +667,14 @@ async function startRun(siteId = SITE_ID) {
   }
   const naukriRunValues = await chrome.storage.local.get("runs.naukri");
   if (naukriRunValues["runs.naukri"] && ACTIVE_STATES.has(naukriRunValues["runs.naukri"].state)) {
-    throw new Error(globalThis.JobCollectorRunGuard.activeRunMessage(naukriRunValues["runs.naukri"]));
+    throw new Error(activeRunMessage(naukriRunValues["runs.naukri"]));
+  }
+  const indeedRunValues = await chrome.storage.local.get("runs.indeed");
+  if (
+    indeedRunValues["runs.indeed"]
+    && (ACTIVE_STATES.has(indeedRunValues["runs.indeed"].state) || indeedRunValues["runs.indeed"].resultsOpening)
+  ) {
+    throw new Error(activeRunMessage(indeedRunValues["runs.indeed"]));
   }
 
   const cooldown = await readCooldown();
@@ -670,7 +691,7 @@ async function startRun(siteId = SITE_ID) {
 
   const current = await readRunState();
   if (ACTIVE_STATES.has(current.state) || current.resultsOpening) {
-    throw new Error(globalThis.JobCollectorRunGuard.activeRunMessage(current));
+    throw new Error(activeRunMessage(current));
   }
 
   const runId = crypto.randomUUID();
@@ -980,9 +1001,12 @@ async function handleMessage(message, sender) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const isNaukriMessage = message && message.siteId === "naukri";
+  const isIndeedMessage = message && message.siteId === "indeed";
   const operation = isNaukriMessage
     ? globalThis.JobCollectorNaukriBackground.handleMessage(message, sender)
-    : initializeStorage().then(() => handleMessage(message, sender));
+    : isIndeedMessage
+      ? globalThis.JobCollectorIndeedBackground.handleMessage(message, sender)
+      : initializeStorage().then(() => handleMessage(message, sender));
   operation
     .then(sendResponse)
     .catch(async (error) => {
@@ -1002,6 +1026,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (globalThis.JobCollectorNaukriConfig.debug) {
             console.error("[Naukri Jobs Collector] Could not write action notice", errorMessage(noticeError));
           }
+        }
+      } else if (isIndeedMessage) {
+        try {
+          await chrome.storage.local.set({
+            "notices.indeed": {
+              text: errorMessage(error),
+              kind: "error",
+              updatedAt: new Date().toISOString()
+            }
+          });
+        } catch (noticeError) {
+          console.error("[Indeed Jobs Collector] Could not write action notice", errorMessage(noticeError));
         }
       } else {
         debugLog("Action failed", errorMessage(error));
@@ -1249,7 +1285,8 @@ async function recoverStaleLinkedInRun() {
 chrome.tabs.onRemoved.addListener((tabId) => {
   void Promise.all([
     stopRunForClosedTab(tabId),
-    globalThis.JobCollectorNaukriBackground.stopForTabClosed(tabId)
+    globalThis.JobCollectorNaukriBackground.stopForTabClosed(tabId),
+    globalThis.JobCollectorIndeedBackground.stopForTabClosed(tabId)
   ])
     .catch((error) => {
       debugLog("Could not stop run after tab close", errorMessage(error));
@@ -1264,6 +1301,16 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     ).catch((error) => {
       debugLog("Could not resume Naukri after navigation", errorMessage(error));
     });
+    void globalThis.JobCollectorIndeedBackground.resumePendingNavigation(
+      tabId,
+      changeInfo.url || (tab && tab.url)
+    ).catch((error) => {
+      console.error("[Indeed Jobs Collector] Could not resume after navigation", errorMessage(error));
+    });
+  }
+  if (typeof changeInfo.url === "string") {
+    void globalThis.JobCollectorIndeedBackground.handleTabUrlChange(tabId, changeInfo.url)
+      .catch((error) => console.error("[Indeed Jobs Collector] Could not validate navigation", errorMessage(error)));
   }
   if (typeof changeInfo.url !== "string" || isSearchResultsUrl(changeInfo.url)) {
     return;
@@ -1283,6 +1330,7 @@ chrome.runtime.onInstalled.addListener(() => {
   void initializeStorage().then(async () => {
     await recoverStaleLinkedInRun();
     await globalThis.JobCollectorNaukriBackground.recoverStaleRun();
+    await globalThis.JobCollectorIndeedBackground.recoverStaleRun();
     return recoverResultsOpening();
   }).catch((error) => {
     debugLog("Storage initialization failed", errorMessage(error));
@@ -1293,6 +1341,7 @@ chrome.runtime.onStartup.addListener(() => {
   void initializeStorage().then(async () => {
     await recoverStaleLinkedInRun();
     await globalThis.JobCollectorNaukriBackground.recoverStaleRun();
+    await globalThis.JobCollectorIndeedBackground.recoverStaleRun();
     return recoverResultsOpening();
   }).catch((error) => {
     debugLog("Storage initialization failed", errorMessage(error));
@@ -1302,6 +1351,7 @@ chrome.runtime.onStartup.addListener(() => {
 void initializeStorage().then(async () => {
   await recoverStaleLinkedInRun();
   await globalThis.JobCollectorNaukriBackground.recoverStaleRun();
+  await globalThis.JobCollectorIndeedBackground.recoverStaleRun();
   return recoverResultsOpening();
 }).catch((error) => {
   debugLog("Storage initialization failed", errorMessage(error));

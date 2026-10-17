@@ -1,11 +1,8 @@
-MULTI-SITE RULES (apply to every task)
-- Sites: linkedin (done, working, MUST NOT REGRESS), naukri (new), indeed (future).
-- Each site = its own adapter in src/sites/<id>/ with its own selectors.js. Shared logic lives only in src/core/. No site-specific strings in core.
-- Site adapters implement matchesUrl, detectBlock, getCurrentPage, collectPage, hasNextPage, goNextPage, normalize, limits, and ui. The shared run loop owns page progression and calls only this adapter contract.
-- manifest content_scripts: one entry per site with its own `matches`; a site's files load ONLY on that site. Naukri host permission: https://www.naukri.com/*.
-- All storage keys are namespaced by site: records `${site}:${jobId}`, runs.<site>, budgets.<site>, cooldown.<site>, opened.<site>.
-- Legacy site data migrations are versioned, retry-safe, verified before completion, and must retain source keys; never remove legacy data during migration.
-- Popup stays Start/Stop only (+ "View results" link). It detects the active tab's site; Start/Stop act on that site only. Unsupported tab -> "Open a LinkedIn or Naukri search results page". Only one run at a time globally.
-- Read-only DOM, never click Apply/Save/anything except the site's own pagination. Never modify URLs or filters. Respect existing safety rules: jittered delays, per-run/day caps, circuit breaker + cooldown, visible-tab only, kill switch.
-- Never use hashed class names (styles_xxx__hash, hv4xxx). Use plain stable classes, ids, data-*, aria-label, href patterns, text.
-- Every change must keep the LinkedIn flow working; add or keep regression checks.
+INDEED RULES (site id: indeed; linkedin and naukri are DONE and MUST NOT REGRESS)
+- New code only in src/sites/indeed/ (adapter.js, selectors.js, parse.js) + one registry entry + one manifest content_scripts block (matches https://in.indeed.com/jobs*, https://in.indeed.com/q-*, host permission https://in.indeed.com/*). Do not edit src/core except for a bug that blocks the SiteAdapter contract; if so, list it explicitly first.
+- Fixtures (read-only, never edit): tests/fixtures/indeed-serp-full.html (full page incl. script JSON), indeed-list.html (list pane), indeed-rightpane.html (reference only).
+- Never use hashed classes: css-xxxxx, serp-page-xxxx, mosaic-provider-jobcards-xxxx, eu4oa1w0 etc. Allowed: data-testid, id, aria-label, role, href patterns, and plain classes job_seen_beacon, jobTitle, jcs-JobTitle.
+- Never click Apply, Save, Not interested, Share, Report, or any card. Never open tabs. Only click the site's own pagination anchor.
+- Never log or store cookies, tokens, csrf values, or full tracking URLs (/rc/clk, /pagead/clk, /applystart). Store only the canonical link https://<origin>/viewjob?jk=<jk>.
+- All storage namespaced indeed:* (records indeed:<jk>, runs.indeed, budgets.indeed, cooldown.indeed, opened.indeed, killswitch.indeed).
+- Keep every existing safety rule: jittered delays, caps, circuit breaker + cooldown, visible-tab only, kill switch, no auto-retry, one run globally.
