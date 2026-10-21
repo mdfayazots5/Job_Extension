@@ -38,6 +38,11 @@ assert.equal(
   adapter.matchesUrl(new URL("https://www.linkedin.com/jobs/view/123/")),
   false
 );
+assert.equal(context.JobCollectorConfig.excludedRoleTerms, undefined);
+assert.equal(adapter.shouldSkipRole({ title: "Java Developer" }), false);
+assert.equal(adapter.shouldSkipRole({ title: "Java Developer" }, ["Java Developer"]), true);
+assert.equal(adapter.shouldSkipRole({ title: "JavaScript Developer" }, ["Java"]), false);
+assert.equal(adapter.shouldSkipRole({ title: "Customer Support Engineer" }, ["Customer Support"]), false);
 assert.deepEqual(
   JSON.parse(JSON.stringify(adapter.normalize({ jobId: "123", title: "Engineer" }))),
   {
@@ -74,6 +79,10 @@ const indeedAdapter = context.JobCollectorSiteRegistry.getAdapter("indeed");
 assert.equal(indeedAdapter.label, "Indeed");
 assert.equal(
   context.JobCollectorSiteRegistry.getAdapterForUrl("https://in.indeed.com/jobs?q=developer"),
+  indeedAdapter
+);
+assert.equal(
+  context.JobCollectorSiteRegistry.getAdapterForUrl("https://in.indeed.com/q-data-engineer-jobs"),
   indeedAdapter
 );
 assert.equal(

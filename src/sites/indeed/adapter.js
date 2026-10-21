@@ -5,14 +5,31 @@
   const selectors = global.JobCollectorIndeedSelectors;
   const config = global.JobCollectorIndeedConfig;
 
+  function getSearchQuery(url) {
+    if (!url || !url.searchParams) {
+      return "";
+    }
+    const directQuery = url.searchParams.get("q");
+    if (typeof directQuery === "string" && directQuery.trim()) {
+      return directQuery.trim();
+    }
+    const pathname = String(url.pathname || "");
+    const legacyMatch = pathname.match(/^\/q-(.+?)(?:-jobs(?:[\-.].*)?)?$/i);
+    if (!legacyMatch) {
+      return "";
+    }
+    return decodeURIComponent(legacyMatch[1].replace(/-/g, " ")).replace(/\s+/g, " ").trim();
+  }
+
   function matchesUrl(url) {
     return Boolean(
       url
       && url.protocol === "https:"
       && url.hostname === "in.indeed.com"
-      && url.pathname === "/jobs"
-      && typeof url.searchParams.get("q") === "string"
-      && url.searchParams.get("q").trim()
+      && (
+        (url.pathname === "/jobs" && Boolean(getSearchQuery(url)))
+        || /^\/q-/i.test(url.pathname || "")
+      )
     );
   }
 
@@ -48,6 +65,15 @@
     }
     const page = Number(url.searchParams.get("page"));
     return Number.isInteger(page) && page > 0 ? page : 1;
+  }
+
+  function normalizeSearchUrl(value) {
+    const url = value instanceof URL ? value : new URL(value);
+    if (!matchesUrl(url)) {
+      throw new Error("An Indeed /jobs or /q- search URL is required.");
+    }
+    const query = getSearchQuery(url);
+    return `https://in.indeed.com/jobs?q=${encodeURIComponent(query)}`;
   }
 
   async function collectPage(ctx) {
@@ -167,22 +193,33 @@
     return applied || expired ? { applied, expired } : null;
   }
 
+  function shouldSkipRole(record, skipTitles = []) {
+    const title = String(record && record.title || "").trim().toLocaleLowerCase();
+    return title !== "" && Array.isArray(skipTitles) && skipTitles.some((skipTitle) => (
+      typeof skipTitle === "string"
+      && skipTitle.trim() !== ""
+      && skipTitle.trim().toLocaleLowerCase() === title
+    ));
+  }
+
   global.JobCollectorIndeedAdapter = Object.freeze({
     id: "indeed",
     label: "Indeed",
     matchesUrl,
     detectBlock,
     getCurrentPage,
+    getSearchQuery,
+    normalizeSearchUrl,
     collectPage,
     hasNextPage,
     goNextPage,
     normalize,
     getSkipReason,
+    shouldSkipRole,
     limits: Object.freeze({
       maxPages: config.maxPages,
       maxJobsPerRun: config.maxJobsPerRun,
-      maxJobsPerDay: config.maxJobsPerDay,
-      maxRunsPerDay: config.maxRunsPerDay
+      maxJobsPerDay: config.maxJobsPerDay
     }),
     ui: Object.freeze({
       tabs: Object.freeze([

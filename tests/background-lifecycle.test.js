@@ -178,8 +178,8 @@ async function run() {
   store["cooldown.indeed"] = { until: Date.now() + 24 * 60 * 60 * 1000 };
   store["killswitch.indeed"] = { triggerCount: 3 };
   await vm.runInContext("handleStart()", context);
-  assert.equal(Object.keys(store.jobsById).length, 0);
-  assert.equal(Object.keys(store.openedJobsById).length, 0);
+  assert.equal(store.records["linkedin:10"].jobId, "10");
+  assert.equal(store["opened.linkedin"]["10"], true);
   assert.equal(store.collectorDiagnostics.length, 0);
   assert.equal(store.collectorState.state, "RUNNING");
   assert.equal(store.collectorState.capturedCount, 0);
@@ -216,7 +216,8 @@ async function run() {
   ]);
   assert.equal(createdTabs.length, 1);
   assert.equal(createdTabs[0].active, true);
-  assert.match(createdTabs[0].url, /results\.html\?site=linkedin&runId=/);
+  assert.equal(createdTabs[0].url, "chrome-extension://collector-test/results.html");
+  assert.equal(store["ui.lastSite"], "linkedin");
   assert.equal(store.collectorState.resultsOpened, true);
 
   store.collectorState = {
@@ -244,7 +245,7 @@ async function run() {
   assert.equal(store.collectorState.companySiteCount, 0);
   assert.equal(store.collectorBudget.jobsToday, 145);
   assert.deepEqual(Object.keys(store.jobsById), ["202"]);
-  assert.equal(createdTabs.length, 2);
+  assert.equal(createdTabs.length, 1);
   assert.equal(store.collectorState.resultsOpened, true);
 
   store.collectorState = {
@@ -314,7 +315,7 @@ async function run() {
     `openResultsForRun(${JSON.stringify(store.collectorState)})`,
     context
   );
-  assert.equal(createdTabs.length, 2);
+  assert.equal(createdTabs.length, 1);
 
   const today = vm.runInContext("localDayKey()", context);
   store.collectorState = { ...store.collectorState, state: "DONE", runId: "budget-run" };
@@ -406,6 +407,16 @@ async function run() {
   assert.equal(saved.saved, true);
   assert.equal(store.collectorBudget.jobsToday, 1);
   assert.deepEqual(store.collectorBudget.seenJobIds, ["900", "901"]);
+  const previousLastSeenAt = "2026-01-01T00:00:00.000Z";
+  store.records["linkedin:901"].lastSeenAt = previousLastSeenAt;
+  const budgetBeforeTouch = JSON.stringify(store.collectorBudget);
+  const touchResult = await vm.runInContext(
+    `touchSeenJobs({ runId: "dedupe-run", jobIds: ["901", "901", "900"] })`,
+    context
+  );
+  assert.equal(touchResult.touchedCount, 1);
+  assert.notEqual(store.records["linkedin:901"].lastSeenAt, previousLastSeenAt);
+  assert.equal(JSON.stringify(store.collectorBudget), budgetBeforeTouch);
 
   await vm.runInContext(
     `appendDiagnostic("dedupe-run", "run-ended", { jobId: "901", reason: "Role contains private text", pageNumber: 1, title: "must-not-be-stored" })`,
@@ -524,6 +535,13 @@ async function run() {
     state: "RUNNING"
   };
   store.jobsById = {};
+  store.records = {
+    ...store.records,
+    "linkedin:historical": {
+      jobId: "historical",
+      applyType: "Easy Apply"
+    }
+  };
   store.collectorBudget = {
     ...store.collectorBudget,
     jobsToday: 0,
@@ -536,10 +554,12 @@ async function run() {
   assert.equal(perRunCapCapture.limitReached, true);
   assert.equal(store.collectorState.state, "DONE");
   assert.equal(store.collectorState.terminalReason, "limit");
+  assert.ok(store.records["linkedin:historical"]);
+  assert.ok(store.records["linkedin:951"]);
 }
 
 run().then(() => {
-  console.log("Background lifecycle tests passed: Start clears data, Stop retains data, and terminal runs open results once.");
+  console.log("Background lifecycle tests passed: Start retains saved jobs/opened state, Stop retains data, and terminal runs open results once.");
 }).catch((error) => {
   console.error(error);
   process.exitCode = 1;

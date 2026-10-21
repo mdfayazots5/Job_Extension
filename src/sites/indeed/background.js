@@ -60,17 +60,20 @@
       dayKey: dateKey,
       jobsToday: 0,
       seenJobIds: [],
-      runsToday: 0,
       lastRunAt: null
     };
   }
 
   function canonicalSearchUrl(value) {
-    const url = value instanceof URL ? new URL(value.href) : new URL(value);
+    const url = value instanceof URL ? value : new URL(value);
     if (!adapter.matchesUrl(url)) {
-      throw new Error("An Indeed /jobs search URL with a q= term is required.");
+      throw new Error("An Indeed /jobs or /q- search URL is required.");
     }
-    return `https://in.indeed.com/jobs?q=${encodeURIComponent(url.searchParams.get("q"))}`;
+    const query = adapter.getSearchQuery(url);
+    if (!query) {
+      throw new Error("Indeed search URLs must include a query term.");
+    }
+    return `https://in.indeed.com/jobs?q=${encodeURIComponent(query)}`;
   }
 
   function normalizeBudget(budget) {
@@ -83,8 +86,6 @@
       || budget.jobsToday < 0
       || !Array.isArray(budget.seenJobIds)
       || budget.seenJobIds.some((id) => typeof id !== "string" || !/^[0-9a-f]{16}$/.test(id))
-      || !Number.isInteger(budget.runsToday)
-      || budget.runsToday < 0
       || (budget.lastRunAt !== null && !Number.isFinite(Date.parse(budget.lastRunAt)))
     ) {
       throw new Error("Stored Indeed daily budget is invalid; Start is blocked to protect the limits.");
@@ -93,7 +94,6 @@
       dayKey: today,
       jobsToday: budget.jobsToday,
       seenJobIds: budget.seenJobIds,
-      runsToday: budget.runsToday,
       lastRunAt: budget.lastRunAt
     };
   }
@@ -388,7 +388,7 @@
       }
       const url = new URL(tab.url);
       if (!adapter.matchesUrl(url)) {
-        throw new Error("Open an Indeed /jobs search page with a q= search term to start.");
+        throw new Error("Open an Indeed jobs search page with a query term to start.");
       }
       const content = await ensureContentScript(tab.id);
       if (!content.ready) {
@@ -408,10 +408,6 @@
       if (budget.jobsToday >= config.maxJobsPerDay) {
         throw new Error(`Daily Indeed job limit reached (${budget.jobsToday}/${config.maxJobsPerDay}).`);
       }
-      if (budget.runsToday >= config.maxRunsPerDay) {
-        throw new Error(`Daily Indeed run limit reached (${budget.runsToday}/${config.maxRunsPerDay}).`);
-      }
-
       const current = await getState();
       if (ACTIVE_STATES.has(current.state) || current.resultsOpening) {
         throw new Error("An Indeed collector run is already active.");
@@ -443,7 +439,6 @@
         [keys.runState]: running,
         [keys.budget]: {
           ...budget,
-          runsToday: budget.runsToday + 1,
           lastRunAt: startedAt
         },
         [keys.progress]: {
@@ -512,10 +507,10 @@
     try {
       const left = new URL(leftValue);
       const right = new URL(rightValue);
-      return adapter.matchesUrl(left)
-        && adapter.matchesUrl(right)
-        && left.pathname === right.pathname
-        && left.searchParams.get("q") === right.searchParams.get("q");
+      if (!adapter.matchesUrl(left) || !adapter.matchesUrl(right)) {
+        return false;
+      }
+      return adapter.getSearchQuery(left).toLowerCase() === adapter.getSearchQuery(right).toLowerCase();
     } catch (_error) {
       return false;
     }

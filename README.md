@@ -6,7 +6,13 @@ Naukri job details are read from visible result cards in the active page DOM. A 
 
 Indeed collection starts only on `https://in.indeed.com/jobs` with a `q` search term and a loaded `#mosaic-provider-jobcards` results container. It reads the visible result cards and page-provided job JSON, clicks only Indeed's own Next-page control, and never opens a job card.
 
-Indeed records are enriched with the jobcards JSON's applied, saved, visited, expired, and apply-count status. Jobs reported as applied or expired are not saved; the popup and results footer show those per-run skip counts. Visited jobs remain in results with a **Visited** chip and an optional **Hide visited** filter. Missing JSON status stays unknown rather than being treated as false. Indeed's Apply action continues to open only the canonical `/viewjob?jk=` URL.
+Indeed records are enriched with the jobcards JSON's applied, saved, visited, expired, and apply-count status. Jobs reported as applied or expired are not saved; the popup and results footer show those per-run skip counts. Visited jobs remain in results with a **Visited** chip. Missing JSON status stays unknown rather than being treated as false. Indeed's Apply action continues to open only the canonical `/viewjob?jk=` URL.
+
+The results page has independent, saved location filters for Hyderabad, Bengaluru/Bangalore, and Other on each site. Naukri also has saved, multi-select experience filters for 1–5 years; selecting a year matches Naukri experience ranges that include that year. **Hide opened** is the only opened/visited/sponsored visibility checkbox and is saved separately for each site. Select jobs with the row checkboxes and choose **Hide selected** to hide them persistently for that site; **Clear hidden** restores them. **Hide hidden jobs** is enabled by default and remains enabled across refreshes. Filters and hidden status do not remove stored records.
+
+The results view uses one extension URL for all platforms. Its selected platform is remembered in local extension storage rather than encoded in the URL.
+
+Use the **Settings** gear on the results page to open **History**, **Export**, and **Skip Title**. Skip titles are managed for the currently selected platform and saved locally under that site's namespace. A title is skipped only when the entire job title matches (case-insensitive, ignoring surrounding spaces); similar or longer titles are still captured. The former built-in title exclusions have been removed.
 
 ## Install
 
@@ -40,7 +46,7 @@ The extension uses only `storage`, `scripting`, `tabs`, and `alarms`; host acces
 
 The results page and service worker load site adapters, but they do not inject a site's content scripts into another site's page. No cookies, authentication tokens, or CSRF values are read or stored. LinkedIn and Indeed job links are canonicalized; Naukri listing links discard query strings while the site-provided Company Apply redirect is retained for its intended Apply action. Indeed run state stores only the `q` term, and Naukri diagnostics record URL paths rather than query strings.
 
-Stored job records older than 30 days are pruned on the next write for that site; matching opened-state entries are pruned with their records. Site diagnostics are limited to 200 entries and 30 days.
+LinkedIn records are retained across runs and are deduplicated by job ID; re-seen jobs refresh their `lastSeenAt` value, and LinkedIn records are not automatically expired. Naukri and Indeed records older than 30 days are pruned on the next write for that site; matching opened-state entries are pruned with their records. LinkedIn uses Chrome local storage, so its available storage quota still applies. Site diagnostics are limited to 200 entries and 30 days.
 
 ## Naukri flow diagnostics
 

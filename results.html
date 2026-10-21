@@ -9,51 +9,122 @@
   </head>
   <body>
     <main class="page-shell">
-      <nav id="site-switcher" class="site-switcher" aria-label="Job site">
-        <button id="linkedin-site" class="site-choice" type="button" aria-pressed="false">
-          LinkedIn <span id="linkedin-site-count" class="site-count">0</span>
-        </button>
-        <button id="naukri-site" class="site-choice" type="button" aria-pressed="false">
-          Naukri <span id="naukri-site-count" class="site-count">0</span>
-        </button>
-        <button id="indeed-site" class="site-choice" type="button" aria-pressed="false">
-          Indeed <span id="indeed-site-count" class="site-count">0</span>
-        </button>
-      </nav>
-      <header class="page-header">
-        <p id="run-subtitle" class="subtitle">Loading collection…</p>
-        <p id="total-count" class="total-count" aria-live="polite">0 jobs</p>
+      <header class="app-header">
+        <a id="brand-link" class="brand" href="results.html" aria-label="JobFlow results">
+          <span class="brand-mark" aria-hidden="true">JF</span>
+        </a>
+        <section class="summary-cards header-summary" aria-label="Job summary">
+          <article class="summary-card summary-total">
+            <div class="summary-label">Total captured</div>
+            <div class="summary-value"><span id="summary-total">0</span><span id="summary-site" class="summary-unit">jobs</span></div>
+            <p id="summary-total-note" class="summary-note">Across this platform</p>
+          </article>
+          <article class="summary-card">
+            <div class="summary-label">Easy apply</div>
+            <div class="summary-value"><span id="summary-easy">0</span><span id="summary-easy-share" class="summary-unit">0% of jobs</span></div>
+            <p class="summary-note">Jobs with an in-platform application</p>
+          </article>
+          <article class="summary-card">
+            <div class="summary-label">Actively reviewing</div>
+            <div class="summary-value summary-green"><span id="summary-reviewing">0</span><span id="summary-reviewing-share" class="summary-unit">0% verified</span></div>
+            <p class="summary-note">Recruiter activity shown on the listing</p>
+          </article>
+          <article class="summary-card">
+            <div class="summary-label">Fresh today</div>
+            <div class="summary-value"><span id="summary-fresh">0</span><span class="summary-unit">posted &lt;24h</span></div>
+            <p class="summary-note">Based on available posting dates</p>
+          </article>
+        </section>
+        <nav id="site-switcher" class="site-switcher" aria-label="Job site">
+          <button id="linkedin-site" class="site-choice" type="button" aria-pressed="false">
+            <span class="site-dot linkedin-dot" aria-hidden="true"></span>
+            LinkedIn <span id="linkedin-site-count" class="site-count">0</span>
+          </button>
+          <button id="naukri-site" class="site-choice" type="button" aria-pressed="false">
+            <span class="site-dot naukri-dot" aria-hidden="true"></span>
+            Naukri <span id="naukri-site-count" class="site-count">0</span>
+          </button>
+          <button id="indeed-site" class="site-choice" type="button" aria-pressed="false">
+            <span class="site-dot indeed-dot" aria-hidden="true"></span>
+            Indeed <span id="indeed-site-count" class="site-count">0</span>
+          </button>
+        </nav>
+        <div class="header-actions">
+          <button
+            id="settings-button"
+            class="settings-button"
+            type="button"
+            aria-label="Settings"
+            aria-expanded="false"
+            aria-controls="settings-menu">⚙</button>
+          <div id="settings-menu" class="settings-menu" hidden>
+            <button id="history-button" class="settings-menu-item" type="button">History</button>
+            <button id="export-button" class="settings-menu-item" type="button">Export</button>
+            <button id="skip-titles-button" class="settings-menu-item" type="button" hidden>Skip Title</button>
+          </div>
+        </div>
+        <p id="run-subtitle" class="subtitle" hidden></p>
       </header>
 
-      <div class="toolbar">
-        <div class="tabs" role="tablist" aria-label="Job application type">
-          <button
-            id="easy-tab"
-            class="tab"
-            type="button"
-            role="tab"
-            aria-selected="true"
-            aria-controls="results-panel"
-            tabindex="0">Easy Apply (0)</button>
-          <button
-            id="direct-tab"
-            class="tab"
-            type="button"
-            role="tab"
-            aria-selected="false"
-            aria-controls="results-panel"
-            tabindex="-1"
-            hidden>Direct Apply (0)</button>
-          <button
-            id="company-tab"
-            class="tab"
-            type="button"
-            role="tab"
-            aria-selected="false"
-            aria-controls="results-panel"
-            tabindex="-1">Company Apply (0)</button>
+      <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title">
+        <form method="dialog">
+          <div class="history-header">
+            <div>
+              <h2 id="history-title">Job history</h2>
+              <p>Jobs received by each platform during the selected dates.</p>
+            </div>
+            <button id="history-close" class="icon-button" type="submit" aria-label="Close history">×</button>
+          </div>
+          <div class="history-date-range">
+            <label>From <input id="history-from" type="date"></label>
+            <label>To <input id="history-to" type="date"></label>
+          </div>
+          <p id="history-error" class="history-error" role="alert" hidden></p>
+          <p class="history-note">Opened counts show received jobs that are currently marked as opened.</p>
+          <div class="history-table-wrap">
+            <table class="history-table">
+              <thead>
+                <tr><th scope="col">Platform</th><th scope="col">Received</th><th scope="col">Opened</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">LinkedIn</th><td id="history-linkedin-received">0</td><td id="history-linkedin-opened">0</td></tr>
+                <tr><th scope="row">Naukri</th><td id="history-naukri-received">0</td><td id="history-naukri-opened">0</td></tr>
+                <tr><th scope="row">Indeed</th><td id="history-indeed-received">0</td><td id="history-indeed-opened">0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="skip-title-dialog" class="history-dialog skip-title-dialog" aria-labelledby="skip-title-heading">
+        <div class="history-header">
+          <div>
+            <h2 id="skip-title-heading">Skip titles</h2>
+          <p>Only full title matches (case-insensitive) are skipped during capture.</p>
+          </div>
+          <button id="skip-title-close" class="icon-button" type="button" aria-label="Close skip titles">×</button>
         </div>
-        <div class="filters">
+        <form id="skip-title-form" class="skip-title-form">
+          <label for="skip-title-input">Job title</label>
+          <div class="skip-title-editor">
+            <input id="skip-title-input" type="text" maxlength="160" autocomplete="off" placeholder="Enter an exact job title">
+            <button id="skip-title-submit" class="secondary-button" type="submit">Add title</button>
+            <button id="skip-title-cancel-edit" class="secondary-button" type="button" hidden>Cancel</button>
+          </div>
+          <p id="skip-title-error" class="history-error" role="alert" hidden></p>
+        </form>
+        <p id="skip-title-empty" class="skip-title-empty">No titles are currently skipped.</p>
+        <ul id="skip-title-list" class="skip-title-list" aria-label="Titles skipped during Indeed capture"></ul>
+      </dialog>
+
+      <section class="filter-panel" aria-label="Search and filter jobs">
+        <div class="toolbar-primary">
+          <div class="tabs" role="tablist" aria-label="Job application type">
+            <button id="all-tab" class="tab" type="button" role="tab" aria-selected="true" aria-controls="results-panel" tabindex="0">All (0)</button>
+            <button id="easy-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1">Easy Apply (0)</button>
+            <button id="direct-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1" hidden>Direct Apply (0)</button>
+            <button id="company-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1">Company Apply (0)</button>
+          </div>
           <label class="search-control">
             <span id="search-label" class="visually-hidden">Search jobs by role or company</span>
             <input id="search" type="search" autocomplete="off" placeholder="Search role or company">
@@ -66,26 +137,32 @@
               <option value="not-indicated">No status shown</option>
             </select>
           </label>
-          <label class="hide-opened-control">
-            <input id="hide-opened" type="checkbox">
-            <span>Hide opened</span>
-          </label>
-          <label id="hide-visited-control" class="hide-opened-control" hidden>
-            <input id="hide-visited" type="checkbox">
-            <span>Hide visited</span>
-          </label>
-          <label id="hide-sponsored-control" class="hide-opened-control" hidden>
-            <input id="hide-sponsored" type="checkbox" checked>
-            <span>Hide sponsored</span>
-          </label>
         </div>
-      </div>
+        <div class="filter-secondary">
+          <fieldset id="location-filter-control" class="filter-group">
+            <legend>Location</legend>
+            <label><input id="filter-location-hyderabad" type="checkbox"> Hyderabad</label>
+            <label><input id="filter-location-bengaluru" type="checkbox"> Bengaluru</label>
+            <label><input id="filter-location-other" type="checkbox"> Other / Remote</label>
+          </fieldset>
+          <fieldset id="experience-filter-control" class="filter-group" hidden>
+            <legend>Experience (years)</legend>
+            <label><input id="filter-experience-under-3" type="checkbox" aria-label="3 years and below experience"> 3Y and below</label>
+            <label><input id="filter-experience-4-5" type="checkbox" aria-label="4 to 5 years experience"> 4-5Y</label>
+            <label><input id="filter-experience-6-plus" type="checkbox" aria-label="6 or more years experience"> 6Y+</label>
+          </fieldset>
+          <button id="hide-selected-jobs" class="secondary-button" type="button" disabled>Hide JD</button>
+          <button id="view-hidden-jobs" class="secondary-button" type="button" aria-pressed="false" disabled>View Hidden Jobs</button>
+          <button id="clear-hidden-jobs" class="secondary-button" type="button" disabled>Clear</button>
+          <span id="showing-count" class="showing-count">Showing 0 of 0</span>
+        </div>
+      </section>
 
       <section
         id="results-panel"
         class="results-panel"
         role="tabpanel"
-        aria-labelledby="easy-tab"
+        aria-labelledby="all-tab"
         tabindex="0">
         <div class="table-wrap">
           <table id="job-table">
@@ -97,10 +174,7 @@
         </div>
         <p id="empty-state" class="empty-state" hidden></p>
       </section>
-      <p id="skipped-count" class="skipped-count">0 skipped (no apply option)</p>
       <p id="site-run-footer" class="site-run-footer" hidden></p>
-      <p id="indeed-skipped-footer" class="site-run-footer" hidden></p>
-      <p id="dates-footer" class="site-run-footer" hidden></p>
       <p id="parse-warning-footer" class="site-run-footer" hidden></p>
       <p id="feedback" class="feedback" role="status" aria-live="polite"></p>
     </main>

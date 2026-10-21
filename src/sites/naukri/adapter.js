@@ -298,6 +298,15 @@
     return normalized;
   }
 
+  function shouldSkipRole(record, skipTitles = []) {
+    const title = String(record && record.title || "").trim().toLocaleLowerCase();
+    return title !== "" && Array.isArray(skipTitles) && skipTitles.some((skipTitle) => (
+      typeof skipTitle === "string"
+      && skipTitle.trim() !== ""
+      && skipTitle.trim().toLocaleLowerCase() === title
+    ));
+  }
+
   global.JobCollectorNaukriAdapter = Object.freeze({
     id: "naukri",
     label: "Naukri",
@@ -321,6 +330,7 @@
       return goNextPage(ctx);
     },
     normalize,
+    shouldSkipRole,
     parseApplicationDetails,
     parsePostedDate,
     limits: Object.freeze({

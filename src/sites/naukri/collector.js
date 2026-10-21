@@ -319,6 +319,10 @@
           currentPage,
           parsed
         );
+        const skipTitleSettings = await chrome.storage.local.get("naukri:skipTitles");
+        const skipTitles = Array.isArray(skipTitleSettings["naukri:skipTitles"])
+          ? skipTitleSettings["naukri:skipTitles"]
+          : [];
         const currentIds = new Set();
         for (const record of parsed) {
           await checkRunning(currentRunId);
@@ -327,19 +331,26 @@
           }
           currentIds.add(record.jobId);
           const details = applicationDetails[record.jobId];
+          const normalized = adapter.normalize({
+            ...record,
+            companyApplyJob: details.companyApplyJob,
+            questionnaireIdPresent: details.questionnaireIdPresent,
+            applyRedirectUrl: details.applyRedirectUrl,
+            pageNumber: currentPage
+          });
+          if (adapter.shouldSkipRole(normalized, skipTitles)) {
+            await logFlow(currentRunId, "role-excluded", {
+              pageNumber: currentPage,
+              jobId: record.jobId,
+              title: normalized.title
+            });
+            continue;
+          }
           await send({
             type: "SAVE_CAPTURE",
             runId: currentRunId,
             siteId: adapter.id,
-            record: {
-              ...adapter.normalize({
-                ...record,
-                companyApplyJob: details.companyApplyJob,
-                questionnaireIdPresent: details.questionnaireIdPresent,
-                applyRedirectUrl: details.applyRedirectUrl,
-                pageNumber: currentPage
-              })
-            }
+            record: normalized
           });
         }
         await logFlow(currentRunId, "page-captured", {

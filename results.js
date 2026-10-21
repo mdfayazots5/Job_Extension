@@ -2,6 +2,8 @@
 
 const RESULT_PARAMS = new URLSearchParams(globalThis.location.search);
 const REQUESTED_SITE_ID = RESULT_PARAMS.get("site") || RESULT_PARAMS.get("siteId");
+const ALL_TAB = "All";
+const EXPERIENCE_BANDS = ["under-3", "4-5", "6-plus"];
 let SITE_ID = REQUESTED_SITE_ID || "linkedin";
 const STORAGE_API = globalThis.JobCollectorStorage;
 let SITE_ADAPTER = globalThis.JobCollectorSiteRegistry.getAdapter(SITE_ID);
@@ -11,8 +13,8 @@ if (!SITE_ADAPTER) {
 let STORAGE_KEYS = getStorageKeys(SITE_ID);
 let APPLY_TABS = SITE_ADAPTER.ui.tabs.map((tab) => tab.id);
 let TAB_LABELS = Object.fromEntries(SITE_ADAPTER.ui.tabs.map((tab) => [tab.id, tab.label]));
-const STANDALONE_REPORT_VERSION = 3;
 const elements = {
+  brandLink: document.getElementById("brand-link"),
   siteSwitcher: document.getElementById("site-switcher"),
   linkedinSite: document.getElementById("linkedin-site"),
   naukriSite: document.getElementById("naukri-site"),
@@ -20,7 +22,42 @@ const elements = {
   linkedinSiteCount: document.getElementById("linkedin-site-count"),
   naukriSiteCount: document.getElementById("naukri-site-count"),
   indeedSiteCount: document.getElementById("indeed-site-count"),
+  settingsButton: document.getElementById("settings-button"),
+  settingsMenu: document.getElementById("settings-menu"),
+  historyButton: document.getElementById("history-button"),
+  exportButton: document.getElementById("export-button"),
+  skipTitlesButton: document.getElementById("skip-titles-button"),
+  historyDialog: document.getElementById("history-dialog"),
+  historyClose: document.getElementById("history-close"),
+  historyFrom: document.getElementById("history-from"),
+  historyTo: document.getElementById("history-to"),
+  historyError: document.getElementById("history-error"),
+  historyCounts: {
+    linkedin: {
+      received: document.getElementById("history-linkedin-received"),
+      opened: document.getElementById("history-linkedin-opened")
+    },
+    naukri: {
+      received: document.getElementById("history-naukri-received"),
+      opened: document.getElementById("history-naukri-opened")
+    },
+    indeed: {
+      received: document.getElementById("history-indeed-received"),
+      opened: document.getElementById("history-indeed-opened")
+    }
+  },
+  skipTitleDialog: document.getElementById("skip-title-dialog"),
+  skipTitleHeading: document.getElementById("skip-title-heading"),
+  skipTitleClose: document.getElementById("skip-title-close"),
+  skipTitleForm: document.getElementById("skip-title-form"),
+  skipTitleInput: document.getElementById("skip-title-input"),
+  skipTitleSubmit: document.getElementById("skip-title-submit"),
+  skipTitleCancelEdit: document.getElementById("skip-title-cancel-edit"),
+  skipTitleError: document.getElementById("skip-title-error"),
+  skipTitleEmpty: document.getElementById("skip-title-empty"),
+  skipTitleList: document.getElementById("skip-title-list"),
   easyTab: document.getElementById("easy-tab"),
+  allTab: document.getElementById("all-tab"),
   directTab: document.getElementById("direct-tab"),
   companyTab: document.getElementById("company-tab"),
   panel: document.getElementById("results-panel"),
@@ -30,11 +67,21 @@ const elements = {
   search: document.getElementById("search"),
   searchLabel: document.getElementById("search-label"),
   applicantReviewFilter: document.getElementById("applicant-review-filter"),
-  hideOpened: document.getElementById("hide-opened"),
-  hideVisited: document.getElementById("hide-visited"),
-  hideVisitedControl: document.getElementById("hide-visited-control"),
-  hideSponsored: document.getElementById("hide-sponsored"),
-  hideSponsoredControl: document.getElementById("hide-sponsored-control"),
+  locationFilterControl: document.getElementById("location-filter-control"),
+  locationFilters: {
+    hyderabad: document.getElementById("filter-location-hyderabad"),
+    bengaluru: document.getElementById("filter-location-bengaluru"),
+    other: document.getElementById("filter-location-other")
+  },
+  experienceFilterControl: document.getElementById("experience-filter-control"),
+  experienceFilters: {
+    "under-3": document.getElementById("filter-experience-under-3"),
+    "4-5": document.getElementById("filter-experience-4-5"),
+    "6-plus": document.getElementById("filter-experience-6-plus")
+  },
+  hideSelectedJobs: document.getElementById("hide-selected-jobs"),
+  viewHiddenJobs: document.getElementById("view-hidden-jobs"),
+  clearHiddenJobs: document.getElementById("clear-hidden-jobs"),
   sortButtons: {
     role: document.getElementById("role-sort"),
     company: document.getElementById("company-sort"),
@@ -47,32 +94,55 @@ const elements = {
   },
   subtitle: document.getElementById("run-subtitle"),
   siteRunFooter: document.getElementById("site-run-footer"),
-  indeedSkippedFooter: document.getElementById("indeed-skipped-footer"),
-  datesFooter: document.getElementById("dates-footer"),
   parseWarningFooter: document.getElementById("parse-warning-footer"),
-  total: document.getElementById("total-count"),
-  skipped: document.getElementById("skipped-count"),
+  summaryTotal: document.getElementById("summary-total"),
+  summarySite: document.getElementById("summary-site"),
+  summaryTotalNote: document.getElementById("summary-total-note"),
+  summaryEasy: document.getElementById("summary-easy"),
+  summaryEasyShare: document.getElementById("summary-easy-share"),
+  summaryReviewing: document.getElementById("summary-reviewing"),
+  summaryReviewingShare: document.getElementById("summary-reviewing-share"),
+  summaryFresh: document.getElementById("summary-fresh"),
+  showingCount: document.getElementById("showing-count"),
   feedback: document.getElementById("feedback")
 };
 const LAST_SITE_KEY = "ui.lastSite";
+const HISTORY_OPENED_KEYS = ["linkedin", "naukri", "indeed"].map(
+  (siteId) => STORAGE_API.keysForSite(siteId).openedJobs
+);
+
+function getSkipTitlesStorageKey(siteId = SITE_ID) {
+  return `${siteId}:skipTitles`;
+}
 
 let storageSnapshot = {
   jobsById: {},
   openedJobsById: {},
+  hiddenJobsById: {},
+  filterSettings: { locations: [], experienceYears: [], hideOpened: true, hideHiddenJobs: true },
   collectorState: null,
-  resultsSelectedTab: null
+  resultsSelectedTab: null,
+  skipTitles: []
 };
 let selectedTab = APPLY_TABS[0];
+let showingHiddenJobs = false;
+let tabBeforeHiddenJobsView = null;
+let editingSkipTitle = null;
 let siteCounts = { linkedin: 0, naukri: 0, indeed: 0 };
 let openedWriteQueue = Promise.resolve();
+let hiddenWriteQueue = Promise.resolve();
+let filterWriteQueue = Promise.resolve();
+const selectedJobIds = new Set();
+let visibleJobIds = [];
 let sortState = { key: "posted", direction: "descending" };
-let reportDownloadPromise = null;
 
 function getStorageKeys(siteId) {
   return Object.freeze({
     ...STORAGE_API.keysForSite(siteId),
     jobs: "records",
-    opened: STORAGE_API.keysForSite(siteId).openedJobs
+    opened: STORAGE_API.keysForSite(siteId).openedJobs,
+    hidden: STORAGE_API.keysForSite(siteId).hiddenJobs,
+    filters: STORAGE_API.keysForSite(siteId).filters
   });
 }
 
@@ -86,15 +156,14 @@ function configureSite(siteId) {
   STORAGE_KEYS = getStorageKeys(siteId);
   APPLY_TABS = adapter.ui.tabs.map((tab) => tab.id);
   TAB_LABELS = Object.fromEntries(adapter.ui.tabs.map((tab) => [tab.id, tab.label]));
-  selectedTab = APPLY_TABS[0];
+  selectedTab = ALL_TAB;
+  elements.brandLink.href = `results.html?site=${encodeURIComponent(siteId)}`;
   document.title = `${adapter.label} Jobs`;
   elements.applicantReviewFilter.closest("label").hidden = siteId !== "linkedin";
-  elements.skipped.hidden = siteId !== "linkedin";
   elements.subtitle.hidden = siteId !== "linkedin";
   elements.siteRunFooter.hidden = siteId !== "naukri";
-  elements.parseWarningFooter.hidden = siteId !== "indeed";
-  elements.hideVisitedControl.hidden = siteId !== "indeed";
-  elements.hideSponsoredControl.hidden = siteId !== "indeed";
+  elements.experienceFilterControl.hidden = siteId !== "naukri";
+  elements.parseWarningFooter.hidden = true;
   elements.search.placeholder = siteId === "naukri"
     ? "Search role, company, agency, or skills"
     : siteId === "indeed"
@@ -110,6 +179,9 @@ function configureSite(siteId) {
   elements.companyTab.hidden = !adapter.ui.tabs.some((tab) => (
     tab.id === "Company Apply" || tab.id === "Company Site"
   ));
+  elements.skipTitlesButton.hidden = false;
+  elements.skipTitleHeading.textContent = `Skip titles — ${adapter.label}`;
+  closeSettingsMenu();
   elements.linkedinSite.setAttribute("aria-pressed", String(siteId === "linkedin"));
   elements.naukriSite.setAttribute("aria-pressed", String(siteId === "naukri"));
   elements.indeedSite.setAttribute("aria-pressed", String(siteId === "indeed"));
@@ -122,6 +194,8 @@ function configureSite(siteId) {
 }
 
 function renderTabLabels() {
+  elements.allTab.hidden = false;
+  elements.allTab.textContent = "All (0)";
   for (const [index, tab] of APPLY_TABS.entries()) {
     const button = getTabButton(tab, index);
     button.hidden = false;
@@ -135,6 +209,9 @@ function renderTabLabels() {
 }
 
 function getTabButton(tab, index = APPLY_TABS.indexOf(tab)) {
+  if (tab === ALL_TAB) {
+    return elements.allTab;
+  }
   if (tab === "Direct Apply") {
     return elements.directTab;
   }
@@ -178,6 +255,29 @@ function renderHeaders() {
     } else if (column.id === "apply") {
       heading.className = "apply-column";
     }
+    if (column.id === "number") {
+      const selectHeading = document.createElement("th");
+      selectHeading.className = "select-column";
+      const selectAllJobs = document.createElement("input");
+      selectAllJobs.id = "select-all-jobs";
+      selectAllJobs.className = "job-selection select-all-jobs";
+      selectAllJobs.type = "checkbox";
+      selectAllJobs.setAttribute("aria-label", "Select all visible jobs to hide");
+      selectAllJobs.title = "Select all visible jobs to hide";
+      selectAllJobs.addEventListener("change", () => {
+        for (const jobId of visibleJobIds) {
+          if (selectAllJobs.checked) {
+            selectedJobIds.add(jobId);
+          } else {
+            selectedJobIds.delete(jobId);
+          }
+        }
+        render();
+      });
+      selectHeading.appendChild(selectAllJobs);
+      elements.selectAllJobs = selectAllJobs;
+      elements.columnHeadings.appendChild(selectHeading);
+    }
     elements.columnHeadings.appendChild(heading);
   }
 }
@@ -210,13 +310,165 @@ function getRecords() {
 }
 
 function getRecordsForTab(records, tab) {
+  if (tab === ALL_TAB) {
+    return records;
+  }
   return records.filter((record) => getRecordTab(record) === tab);
+}
+
+function normalizeFilterSettings(value) {
+  const settings = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+  const allowedLocations = ["hyderabad", "bengaluru", "other"];
+  const selectedLocations = Array.isArray(settings.locations)
+    ? settings.locations.filter((location) => allowedLocations.includes(location))
+    : [];
+  const selectedExperience = normalizeExperienceBands(settings.experienceYears);
+  return {
+    locations: Array.from(new Set(selectedLocations)),
+    experienceYears: Array.from(new Set(selectedExperience)),
+    hideOpened: true,
+    hideHiddenJobs: true
+  };
+}
+
+function normalizeExperienceBands(values) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const selected = new Set();
+  for (const value of values) {
+    if (EXPERIENCE_BANDS.includes(value)) {
+      selected.add(value);
+      continue;
+    }
+    const legacyYear = Number(value);
+    if (legacyYear >= 0 && legacyYear <= 3) {
+      selected.add("under-3");
+    } else if (legacyYear === 4) {
+      selected.add("4-5");
+    } else if (legacyYear >= 5) {
+      selected.add("4-5");
+      selected.add("6-plus");
+    }
+  }
+  return EXPERIENCE_BANDS.filter((band) => selected.has(band));
+}
+
+function setFilterControls(settings) {
+  for (const [location, checkbox] of Object.entries(elements.locationFilters)) {
+    checkbox.checked = settings.locations.includes(location);
+  }
+  for (const [band, checkbox] of Object.entries(elements.experienceFilters)) {
+    checkbox.checked = settings.experienceYears.includes(band);
+  }
+}
+
+function readFilterControls() {
+  return {
+    locations: Object.entries(elements.locationFilters)
+      .filter(([, checkbox]) => checkbox.checked)
+      .map(([location]) => location),
+    experienceYears: Object.entries(elements.experienceFilters)
+      .filter(([, checkbox]) => checkbox.checked)
+      .map(([band]) => band),
+    hideOpened: true,
+    hideHiddenJobs: true
+  };
+}
+
+function getRecordLocation(record) {
+  return [
+    record.location,
+    record.locationRaw,
+    Array.isArray(record.locations) ? record.locations.join(", ") : ""
+  ].filter((value) => typeof value === "string").join(", ");
+}
+
+function matchesLocationFilter(record, selectedLocations) {
+  if (selectedLocations.length === 0) {
+    return true;
+  }
+  const location = getRecordLocation(record);
+  const hasHyderabad = /\bhyderabad\b/i.test(location);
+  const hasBengaluru = /\b(?:bengaluru|bangalore)\b/i.test(location);
+  return selectedLocations.some((selected) => (
+    selected === "hyderabad" && hasHyderabad
+    || selected === "bengaluru" && hasBengaluru
+    || selected === "other" && !hasHyderabad && !hasBengaluru
+  ));
+}
+
+function matchesExperienceFilter(record, selectedBands) {
+  if (SITE_ID !== "naukri" || selectedBands.length === 0) {
+    return true;
+  }
+  const value = String(record.experience || "").trim();
+  const range = value.match(/(\d+(?:\.\d+)?)\s*(?:(?:-\s*|to\s*)(\d+(?:\.\d+)?|\+)|(\+))/i);
+  let minimum;
+  let maximum;
+  if (range) {
+    minimum = Number(range[1]);
+    maximum = range[2] === "+" || range[3]
+      ? Infinity
+      : Number(range[2]);
+  } else {
+    const single = value.match(/^\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)\b/i);
+    if (!single) {
+      return false;
+    }
+    minimum = Number(single[1]);
+    maximum = minimum;
+  }
+  const bands = {
+    "under-3": [0, 3],
+    "4-5": [4, 5],
+    "6-plus": [6, Infinity]
+  };
+  return selectedBands.some((band) => (
+    minimum <= bands[band][1] && maximum >= bands[band][0]
+  ));
+}
+
+function matchesJobFilters(record, settings) {
+  return matchesLocationFilter(record, settings.locations)
+    && matchesExperienceFilter(record, settings.experienceYears);
+}
+
+function matchesSearchTerm(value, term) {
+  if (!term) {
+    return true;
+  }
+  if (/\s/.test(term)) {
+    return value.includes(term);
+  }
+  const isWordCharacter = (character) => /[\p{L}\p{N}_]/u.test(character);
+  let index = value.indexOf(term);
+  while (index !== -1) {
+    const before = index > 0 ? value[index - 1] : "";
+    const after = value[index + term.length] || "";
+    if (
+      (!isWordCharacter(term[0]) || !isWordCharacter(before))
+      && (!isWordCharacter(term[term.length - 1]) || !isWordCharacter(after))
+    ) {
+      return true;
+    }
+    index = value.indexOf(term, index + 1);
+  }
+  return false;
 }
 
 function getRecordTab(record) {
   return typeof SITE_ADAPTER.ui.tabFor === "function"
     ? SITE_ADAPTER.ui.tabFor(record)
     : record.applyType;
+}
+
+function isRecordOpened(record) {
+  const jobId = String(record.jobId || "");
+  return storageSnapshot.openedJobsById[jobId] === true
+    || (SITE_ID === "indeed" && record.visited === true);
 }
 
 function validHttpUrl(value) {
@@ -332,15 +584,18 @@ function getIndeedPostedTimestamp(record) {
     : null;
 }
 
-function hasIndeedPostedData(record) {
-  const relativeText = String(record.postedText || "").trim();
-  return Boolean(
-    record.postedApprox
-    || (/^(?:just posted|today|\d+\s+days?\s+ago|30\+\s+days?\s+ago)$/i.test(relativeText)
-      && relativeText !== "Date unavailable"
-      && relativeText !== "Date not listed")
-    || getIndeedPostedTimestamp(record) !== null
-  );
+function getNaukriPostedAge(record) {
+  const text = String(record.postedText || "").trim().toLowerCase();
+  if (/^(?:just now|few hours ago|today)$/.test(text)) {
+    return 0;
+  }
+  const match = text.match(/^(\d+)\+?\s+(hours?|days?|weeks?|months?)\s+ago$/);
+  if (!match) {
+    return null;
+  }
+  const amount = Number(match[1]);
+  const unit = match[2].replace(/s$/, "");
+  return amount * (unit === "hour" ? 1 / 24 : unit === "day" ? 1 : unit === "week" ? 7 : 30);
 }
 
 function comparePostedRecords(first, second, direction, siteId = SITE_ID) {
@@ -370,6 +625,17 @@ function comparePostedRecords(first, second, direction, siteId = SITE_ID) {
       : 0;
   }
 
+  if (siteId === "naukri") {
+    const firstAge = getNaukriPostedAge(first);
+    const secondAge = getNaukriPostedAge(second);
+    if (firstAge !== null && secondAge !== null) {
+      return (secondAge - firstAge) * direction;
+    }
+    if (firstAge !== null || secondAge !== null) {
+      return firstAge !== null ? -1 : 1;
+    }
+  }
+
   const firstDate = Date.parse(first.postedDateEstimate || first.capturedAt || "");
   const secondDate = Date.parse(second.postedDateEstimate || second.capturedAt || "");
   const normalizedFirst = Number.isNaN(firstDate) ? -Infinity : firstDate;
@@ -386,8 +652,9 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function buildStandaloneReport(records, openedJobsById, runState, savedSelectedTab) {
+function buildStandaloneReport(records, openedJobsById, runState, savedSelectedTab, savedFilterSettings) {
   const reportTabs = SITE_ADAPTER.ui.tabs.map(({ id, label }) => ({ id, label }));
+  const reportFilterSettings = normalizeFilterSettings(savedFilterSettings);
   const reportRecords = records.map((record) => ({
     jobId: String(record.jobId || ""),
     title: String(record.title || "Untitled role"),
@@ -399,6 +666,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       || record.locationRaw
       || "Location not listed"
     ),
+    experience: String(record.experience || ""),
     tabId: getRecordTab(record),
     companyApplyUrl: validHttpUrl(record.companyApplyUrl),
     postedType: record.postedType,
@@ -433,13 +701,8 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
   const embeddedTabs = JSON.stringify(reportTabs).replace(/</g, "\\u003c");
+  const embeddedFilters = JSON.stringify(reportFilterSettings).replace(/</g, "\\u003c");
   const runDate = formatRunDate(runState);
-  const skippedCount = SITE_ID === "linkedin"
-    ? records.filter((record) => record.applyType === "Unknown").length
-    : 0;
-  const indeedSkippedSummary = SITE_ID === "indeed"
-    ? `Skipped: ${Number(runState && runState.skippedAppliedCount) || 0} applied, ${Number(runState && runState.skippedExpiredCount) || 0} expired`
-    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -455,15 +718,16 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     .page-header{display:flex;min-height:42px;align-items:baseline;gap:18px;margin-bottom:22px}
     h1{margin:0;font-size:1.55rem;letter-spacing:-.04em;white-space:nowrap}.subtitle,.total-count{margin:0;color:var(--muted);font-size:.88rem}
     .total-count{margin-left:auto;padding:6px 11px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-weight:650;white-space:nowrap}
-    .toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}
-    .tabs,.filters{display:flex;align-items:center;gap:8px}.tabs{gap:4px;padding:4px;border:1px solid var(--border);border-radius:12px;background:var(--surface-soft)}
+    .toolbar{display:flex;align-items:center;justify-content:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:14px}
+    .tabs,.filters{display:flex;align-items:center;gap:8px}.filters{flex:1 1 600px;flex-wrap:wrap;justify-content:flex-start;min-width:0}.tabs{flex:0 0 auto;gap:4px;padding:4px;border:1px solid var(--border);border-radius:12px;background:var(--surface-soft)}
     .tab{min-height:40px;padding:8px 15px;border:1px solid transparent;border-radius:9px;background:var(--surface);color:var(--muted);cursor:pointer;font-size:.9rem;font-weight:650}
     .tab:hover{color:var(--text)}.tab[aria-selected="true"]{background:var(--easy);color:#fff;box-shadow:0 2px 5px rgb(10 42 78 / 16%)}
     body[data-active-tab="Company Site"] .tab[aria-selected="true"]{background:var(--company)}
-    .search-control input{width:min(310px,34vw);min-height:40px;padding:8px 13px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:.88rem}
+    .search-control input{width:min(280px,28vw);min-width:190px;min-height:40px;padding:8px 13px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:.88rem}
     .search-control input:focus{border-color:var(--easy);outline:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--easy) 16%,transparent)}
     body[data-active-tab="Company Site"] .search-control input:focus{border-color:var(--company);box-shadow:0 0 0 3px color-mix(in srgb,var(--company) 16%,transparent)}
     .review-filter select{min-height:40px;padding:8px 30px 8px 11px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:.84rem}
+    .filter-group{display:inline-flex;align-items:center;gap:8px;min-width:0;margin:0;padding:3px 9px 6px;border:1px solid var(--border);border-radius:9px;color:var(--muted);font-size:.78rem}.filter-group legend{padding:0 3px;font-weight:650}.filter-group label{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}.filter-group input{width:14px;height:14px;margin:0;accent-color:var(--easy)}
     .hide-opened-control{display:inline-flex;align-items:center;gap:6px;color:var(--muted);cursor:pointer;font-size:.86rem;white-space:nowrap}
     .hide-opened-control input{width:15px;height:15px;margin:0;accent-color:var(--easy)}body[data-active-tab="Company Site"] .hide-opened-control input{accent-color:var(--company)}
     .table-wrap{max-height:min(760px,calc(100vh - 230px));min-height:360px;overflow:auto;border:1px solid var(--border);border-radius:14px;background:var(--surface);box-shadow:0 8px 26px rgb(22 42 66 / 6%),0 1px 2px rgb(22 42 66 / 4%)}
@@ -488,10 +752,10 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     body[data-active-tab="Company Site"] .apply-link{background:var(--company)}.apply-link[aria-disabled="true"]{cursor:not-allowed;opacity:.55}
     .via-linkedin{color:var(--muted);font-size:.72rem;white-space:nowrap}.opened-tag{display:inline-flex;align-items:center;gap:4px;color:var(--opened);font-size:.72rem;white-space:nowrap}
     .opened-tag a{color:inherit;font-size:.7rem;text-decoration:underline;text-underline-offset:2px}.empty-state{margin:0;padding:42px 16px;color:var(--muted);text-align:center}
-    .skipped-count{margin:12px 2px 0;color:var(--muted);font-size:.82rem}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;clip-path:inset(50%)}
+    .visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;clip-path:inset(50%)}
     @media(prefers-color-scheme:dark){:root{--page:#111a23;--surface:#192531;--surface-soft:#202e3b;--text:#edf3f8;--muted:#aab7c4;--border:#344553;--easy:#3285d6;--easy-soft:#203b56;--company:#13988e;--company-soft:#1d4945;--opened:#b0bdc9}.posted-badge.is-reposted{background:#4a351f;color:#ffd29b}.review-status-tag.is-active{background:#1d4933;color:#a9e6c0}}
     @media(max-width:720px){.page-shell{width:min(100% - 24px,560px);padding-top:18px}.page-header{flex-wrap:wrap;gap:4px 12px;margin-bottom:14px}h1{font-size:1.35rem}.total-count{margin-left:0}
-    .toolbar{align-items:stretch;flex-direction:column;gap:10px}.tabs{display:grid;grid-template-columns:1fr 1fr}.filters{justify-content:space-between}.search-control{flex:1}.search-control input{width:100%}.review-filter{flex:1}.review-filter select{width:100%}
+    .toolbar{align-items:stretch;flex-direction:column;gap:10px}.tabs{display:grid;grid-template-columns:1fr 1fr}.filters{flex:0 1 auto;justify-content:flex-start}.search-control,.review-filter{flex:1 1 100%}.search-control input,.review-filter select{width:100%}.filter-group{flex:1 1 auto;justify-content:space-around}
     .table-wrap{max-height:none;min-height:0;overflow:visible;border:0;background:transparent;box-shadow:none}table,tbody{display:block;width:100%}
     thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap}tbody{display:grid;gap:8px}
     tbody tr{display:grid;height:auto;grid-template-columns:minmax(0,1fr) auto;padding:11px 13px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}
@@ -505,7 +769,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
 <body>
   <main class="page-shell">
     <header class="page-header">
-      <h1>LinkedIn Jobs</h1>
+      <h1>${escapeHtml(SITE_ADAPTER.label)} Jobs</h1>
       <p class="subtitle">${escapeHtml(runDate)}</p>
       <p class="total-count">${records.length} ${records.length === 1 ? "job" : "jobs"}</p>
     </header>
@@ -518,8 +782,21 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       <div class="filters">
         <label class="search-control"><span class="visually-hidden">Search jobs by role or company</span><input id="search" type="search" autocomplete="off" placeholder="Search role or company"></label>
         <label class="review-filter"><span class="visually-hidden">Filter by applicant review status</span><select id="applicant-review-filter"><option value="">All review statuses</option><option value="actively-reviewing">Actively reviewing</option><option value="not-indicated">No status shown</option></select></label>
-        <label class="hide-opened-control"><input id="hide-opened" type="checkbox"><span>Hide opened</span></label>
-        ${SITE_ID === "indeed" ? '<label class="hide-opened-control"><input id="hide-visited" type="checkbox"><span>Hide visited</span></label>' : ""}
+        <fieldset class="filter-group"><legend>Location</legend>
+          <label><input class="location-filter" data-location="hyderabad" type="checkbox"${reportFilterSettings.locations.includes("hyderabad") ? " checked" : ""}> Hyderabad</label>
+          <label><input class="location-filter" data-location="bengaluru" type="checkbox"${reportFilterSettings.locations.includes("bengaluru") ? " checked" : ""}> Bengaluru</label>
+          <label><input class="location-filter" data-location="other" type="checkbox"${reportFilterSettings.locations.includes("other") ? " checked" : ""}> Other</label>
+        </fieldset>
+        ${SITE_ID === "naukri" ? `        <fieldset class="filter-group"><legend>Experience (years)</legend>
+          ${[
+    { id: "under-3", label: "3Y and below", aria: "3 years and below experience" },
+    { id: "4-5", label: "4-5Y", aria: "4 to 5 years experience" },
+    { id: "6-plus", label: "6Y+", aria: "6 or more years experience" }
+  ].map((band) => (
+    `<label><input class="experience-filter" data-band="${band.id}" aria-label="${band.aria}" type="checkbox"${reportFilterSettings.experienceYears.includes(band.id) ? " checked" : ""}> ${band.label}</label>`
+  )).join("")}
+        </fieldset>` : ""}
+        <label class="hide-opened-control"><input id="hide-opened" type="checkbox"${reportFilterSettings.hideOpened ? " checked" : ""}><span>Hide opened</span></label>
       </div>
     </div>
     <section id="results-panel" role="tabpanel" aria-labelledby="easy-tab" tabindex="0">
@@ -538,8 +815,6 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       </div>
       <p id="empty-state" class="empty-state" hidden></p>
     </section>
-    <p class="skipped-count">${skippedCount} skipped (no apply option)</p>
-    ${SITE_ID === "indeed" ? `<p class="skipped-count">${escapeHtml(indeedSkippedSummary)}</p>` : ""}
   </main>
   <script>
     "use strict";
@@ -558,7 +833,8 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     const search = document.getElementById("search");
     const applicantReviewFilter = document.getElementById("applicant-review-filter");
     const hideOpened = document.getElementById("hide-opened");
-    const hideVisited = document.getElementById("hide-visited");
+    const locationFilters = Array.from(document.querySelectorAll(".location-filter"));
+    const experienceFilters = Array.from(document.querySelectorAll(".experience-filter"));
     const empty = document.getElementById("empty-state");
     const panel = document.getElementById("results-panel");
     const sortHeaders = {
@@ -573,6 +849,30 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     };
     const storageKey = "${escapeHtml(SITE_ID)}-jobs-opened-${escapeHtml(runState && runState.runId || "report")}";
     const tabStorageKey = "${escapeHtml(SITE_ID)}-jobs-tab-${escapeHtml(runState && runState.runId || "report")}";
+    const filterStorageKey = "${escapeHtml(SITE_ID)}-jobs-filters-${escapeHtml(runState && runState.runId || "report")}";
+    const initialFilters = ${embeddedFilters};
+    const filterSettings = {
+      locations: [...initialFilters.locations],
+      experienceYears: [...initialFilters.experienceYears],
+      hideOpened: initialFilters.hideOpened
+    };
+    const normalizeExperienceBands = (values) => {
+      if (!Array.isArray(values)) return [];
+      const selected = new Set();
+      for (const value of values) {
+        if (["under-3", "4-5", "6-plus"].includes(value)) {
+          selected.add(value);
+        } else if (Number(value) >= 0 && Number(value) <= 3) {
+          selected.add("under-3");
+        } else if (Number(value) === 4) {
+          selected.add("4-5");
+        } else if (Number(value) >= 5) {
+          selected.add("4-5");
+          selected.add("6-plus");
+        }
+      }
+      return ["under-3", "4-5", "6-plus"].filter((band) => selected.has(band));
+    };
     let selectedTab = tabs[0].id;
     let sortState = { key: "posted", direction: "descending" };
     let opened = { ...initiallyOpened };
@@ -582,6 +882,37 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         opened = { ...opened, ...savedOpened };
       }
     } catch (_error) {}
+    try {
+      const savedFilters = JSON.parse(localStorage.getItem(filterStorageKey) || "null");
+      if (savedFilters && typeof savedFilters === "object" && !Array.isArray(savedFilters)) {
+        filterSettings.locations = Array.isArray(savedFilters.locations)
+          ? savedFilters.locations.filter((value) => ["hyderabad", "bengaluru", "other"].includes(value))
+          : filterSettings.locations;
+        filterSettings.experienceYears = normalizeExperienceBands(savedFilters.experienceYears);
+        filterSettings.hideOpened = savedFilters.hideOpened === true;
+      }
+    } catch (_error) {}
+    const syncFilterControls = () => {
+      hideOpened.checked = filterSettings.hideOpened;
+      for (const checkbox of locationFilters) {
+        checkbox.checked = filterSettings.locations.includes(checkbox.dataset.location);
+      }
+      for (const checkbox of experienceFilters) {
+        checkbox.checked = filterSettings.experienceYears.includes(checkbox.dataset.band);
+      }
+    };
+    const saveFilters = () => {
+      filterSettings.locations = locationFilters
+        .filter((checkbox) => checkbox.checked)
+        .map((checkbox) => checkbox.dataset.location);
+      filterSettings.experienceYears = experienceFilters
+        .filter((checkbox) => checkbox.checked)
+        .map((checkbox) => checkbox.dataset.band);
+      filterSettings.hideOpened = hideOpened.checked;
+      try { localStorage.setItem(filterStorageKey, JSON.stringify(filterSettings)); } catch (_error) {}
+      render();
+    };
+    syncFilterControls();
     try {
       const localTab = localStorage.getItem(tabStorageKey);
       if (tabs.some((tab) => tab.id === localTab)) selectedTab = localTab;
@@ -617,6 +948,25 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     };
     const comparePosted = (first, second, direction) => {
       if ("${escapeHtml(SITE_ID)}" !== "indeed") {
+        if ("${escapeHtml(SITE_ID)}" === "naukri") {
+          const age = (record) => {
+            const text = String(record.postedText || "").trim().toLowerCase();
+            if (/^(?:just now|few hours ago|today)$/.test(text)) return 0;
+            const match = text.match(/^(\\d+)\\+?\\s+(hours?|days?|weeks?|months?)\\s+ago$/);
+            if (!match) return null;
+            const amount = Number(match[1]);
+            const unit = match[2].replace(/s$/, "");
+            return amount * (unit === "hour" ? 1 / 24 : unit === "day" ? 1 : unit === "week" ? 7 : 30);
+          };
+          const firstAge = age(first);
+          const secondAge = age(second);
+          if (firstAge !== null && secondAge !== null) {
+            return (secondAge - firstAge) * direction;
+          }
+          if (firstAge !== null || secondAge !== null) {
+            return firstAge !== null ? -1 : 1;
+          }
+        }
         const firstDate = Date.parse(first.postedDateEstimate || first.capturedAt || "");
         const secondDate = Date.parse(second.postedDateEstimate || second.capturedAt || "");
         return ((Number.isNaN(firstDate) ? -Infinity : firstDate)
@@ -662,19 +1012,72 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       tag.appendChild(undo);
       actions.appendChild(tag);
     };
+    const matchesFilters = (record) => {
+      const location = String(record.location || "");
+      const hasHyderabad = /\bhyderabad\b/i.test(location);
+      const hasBengaluru = /\b(?:bengaluru|bangalore)\b/i.test(location);
+      const locationMatches = filterSettings.locations.length === 0
+        || filterSettings.locations.some((value) => (
+          value === "hyderabad" && hasHyderabad
+          || value === "bengaluru" && hasBengaluru
+          || value === "other" && !hasHyderabad && !hasBengaluru
+        ));
+      if (!locationMatches) return false;
+      if ("${escapeHtml(SITE_ID)}" !== "naukri" || filterSettings.experienceYears.length === 0) {
+        return true;
+      }
+      const experience = String(record.experience || "").trim();
+      const range = experience.match(/(\\d+(?:\\.\\d+)?)\\s*(?:(?:-\\s*|to\\s*)(\\d+(?:\\.\\d+)?|\\+)|(\\+))/i);
+      let minimum;
+      let maximum;
+      if (range) {
+        minimum = Number(range[1]);
+        maximum = range[2] === "+" || range[3] ? Infinity : Number(range[2]);
+      } else {
+        const single = experience.match(/^\\s*(\\d+(?:\\.\\d+)?)\\s*(?:yrs?|years?)\\b/i);
+        if (!single) return false;
+        minimum = Number(single[1]);
+        maximum = minimum;
+      }
+      const bands = {
+        "under-3": [0, 3],
+        "4-5": [4, 5],
+        "6-plus": [6, Infinity]
+      };
+      return filterSettings.experienceYears.some((band) => (
+        minimum <= bands[band][1] && maximum >= bands[band][0]
+      ));
+    };
+    const matchesSearchTerm = (value, term) => {
+      if (!term) return true;
+      if (/\\s/.test(term)) return value.includes(term);
+      const isWordCharacter = (character) => /[\\p{L}\\p{N}_]/u.test(character);
+      let index = value.indexOf(term);
+      while (index !== -1) {
+        const before = index > 0 ? value[index - 1] : "";
+        const after = value[index + term.length] || "";
+        if (
+          (!isWordCharacter(term[0]) || !isWordCharacter(before))
+          && (!isWordCharacter(term[term.length - 1]) || !isWordCharacter(after))
+        ) return true;
+        index = value.indexOf(term, index + 1);
+      }
+      return false;
+    };
     const render = () => {
-      const grouped = records.filter((record) => record.tabId === selectedTab);
+      const grouped = records.filter((record) => (
+        record.tabId === selectedTab && matchesFilters(record)
+      ));
       const term = search.value.trim().toLocaleLowerCase();
       const reviewStatus = applicantReviewFilter.value;
       const matched = grouped.filter((record) => (
         (!reviewStatus || (record.applicantReviewStatus === "actively-reviewing"
           ? "actively-reviewing"
           : "not-indicated") === reviewStatus)
-        && (record.title + " " + record.company).toLocaleLowerCase().includes(term)
+        && matchesSearchTerm((record.title + " " + record.company).toLocaleLowerCase(), term)
       ));
       const visible = matched.filter((record) => (
-        (!hideOpened.checked || opened[record.jobId] !== true)
-        && (!hideVisited || !hideVisited.checked || record.visited !== true)
+        !filterSettings.hideOpened || opened[record.jobId] !== true
       ));
       const direction = sortState.direction === "ascending" ? 1 : -1;
       visible.sort((a, b) => {
@@ -805,9 +1208,11 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       empty.hidden = visible.length > 0;
       empty.textContent = term && matched.length === 0
         ? "No jobs match your search."
+        : grouped.length === 0 && records.some((record) => record.tabId === selectedTab)
+          ? "No jobs match the selected filters."
         : reviewStatus && matched.length === 0 && grouped.length > 0
           ? "No jobs match this applicant-review filter."
-          : hideOpened.checked && matched.length > 0
+          : filterSettings.hideOpened && matched.length > 0
             ? "All matching jobs have been opened."
             : "No " + tabs.find((tab) => tab.id === selectedTab).label + " jobs captured yet.";
     };
@@ -834,9 +1239,10 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     }
     search.addEventListener("input", render);
     applicantReviewFilter.addEventListener("change", render);
-    hideOpened.addEventListener("change", render);
-    hideVisited?.addEventListener("change", render);
-    hideSponsored?.addEventListener("change", render);
+    hideOpened.addEventListener("change", saveFilters);
+    for (const checkbox of [...locationFilters, ...experienceFilters]) {
+      checkbox.addEventListener("change", saveFilters);
+    }
     for (const [key, button] of Object.entries(sortButtons)) {
       button.addEventListener("click", () => {
         sortState = sortState.key === key
@@ -868,82 +1274,282 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
 function reportFilename() {
   const now = new Date();
   const pad = (value) => String(value).padStart(2, "0");
-  return `linkedin-jobs-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.html`;
+  return `${SITE_ID}-jobs-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.html`;
 }
 
-async function maybeDownloadStandaloneReport() {
-  const state = storageSnapshot.collectorState;
-  const requestedRunId = new URLSearchParams(globalThis.location.search).get("runId");
-  if (
-    !state
-    || (state.state !== "DONE" && state.state !== "STOPPED")
-    || !requestedRunId
-    || state.runId !== requestedRunId
-    || (
-      state.htmlReportDownloaded
-      && state.htmlReportVersion === STANDALONE_REPORT_VERSION
-    )
-    || getRecords().length === 0
-    || reportDownloadPromise
-  ) {
+async function exportStandaloneReport() {
+  const latestValues = await chrome.storage.local.get([
+    STORAGE_KEYS.opened,
+    STORAGE_KEYS.selectedTab,
+    STORAGE_KEYS.filters
+  ]);
+  const records = Object.values(await readSiteJobs()).filter((record) => (
+    record && typeof record === "object" && !Array.isArray(record)
+  ));
+  if (records.length === 0) {
+    setFeedback("There are no captured jobs to export.");
+    return;
+  }
+  const html = buildStandaloneReport(
+    records,
+    latestValues[STORAGE_KEYS.opened],
+    storageSnapshot.collectorState,
+    latestValues[STORAGE_KEYS.selectedTab],
+    latestValues[STORAGE_KEYS.filters]
+  );
+  const objectUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+  try {
+    const downloadLink = document.createElement("a");
+    downloadLink.href = objectUrl;
+    downloadLink.download = reportFilename();
+    downloadLink.hidden = true;
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    downloadLink.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    setFeedback("Standalone HTML report downloaded.");
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+}
+
+function dateInputValue(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function setDefaultHistoryRange() {
+  const today = new Date();
+  elements.historyFrom.value = dateInputValue(new Date(today.getFullYear(), today.getMonth(), 1));
+  elements.historyTo.value = dateInputValue(today);
+}
+
+function parseLocalDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.getFullYear() === Number(match[1])
+    && date.getMonth() === Number(match[2]) - 1
+    && date.getDate() === Number(match[3])
+    ? date
+    : null;
+}
+
+function getHistoryCaptureTimestamp(record) {
+  const capturedAt = Date.parse(String(record.capturedAt || ""));
+  if (Number.isFinite(capturedAt)) {
+    return capturedAt;
+  }
+  const firstSeenAt = Date.parse(String(record.firstSeenAt || ""));
+  return Number.isFinite(firstSeenAt) ? firstSeenAt : null;
+}
+
+async function renderHistory() {
+  const from = parseLocalDate(elements.historyFrom.value);
+  const to = parseLocalDate(elements.historyTo.value);
+  if (!from || !to) {
+    elements.historyError.textContent = "Choose valid From and To dates.";
+    elements.historyError.hidden = false;
+    return;
+  }
+  if (from > to) {
+    elements.historyError.textContent = "The From date must be on or before the To date.";
+    elements.historyError.hidden = false;
+    return;
+  }
+  elements.historyError.hidden = true;
+  elements.historyError.textContent = "";
+  const endExclusive = new Date(to.getFullYear(), to.getMonth(), to.getDate() + 1).getTime();
+  const sites = ["linkedin", "naukri", "indeed"];
+  const storageKeys = sites.map((siteId) => STORAGE_API.keysForSite(siteId).openedJobs);
+  const values = await chrome.storage.local.get(["records", ...storageKeys]);
+  const records = values.records && typeof values.records === "object" ? values.records : {};
+  for (const siteId of sites) {
+    const prefix = `${siteId}:`;
+    let received = 0;
+    let opened = 0;
+    for (const [key, record] of Object.entries(records)) {
+      if (
+        !key.startsWith(prefix)
+        || !record
+        || typeof record !== "object"
+        || Array.isArray(record)
+      ) {
+        continue;
+      }
+      const capturedAt = getHistoryCaptureTimestamp(record);
+      if (capturedAt === null || capturedAt < from.getTime() || capturedAt >= endExclusive) {
+        continue;
+      }
+      received += 1;
+      const jobId = String(record.jobId || key.slice(prefix.length));
+      const openedJobs = values[STORAGE_API.keysForSite(siteId).openedJobs];
+      const openedValue = openedJobs && openedJobs[jobId];
+      if (
+        openedValue === true
+        || (typeof openedValue === "string" && Number.isFinite(Date.parse(openedValue)))
+      ) {
+        opened += 1;
+      }
+    }
+    elements.historyCounts[siteId].received.textContent = String(received);
+    elements.historyCounts[siteId].opened.textContent = String(opened);
+  }
+}
+
+async function openHistoryDialog() {
+  if (!elements.historyFrom.value || !elements.historyTo.value) {
+    setDefaultHistoryRange();
+  }
+  if (!elements.historyDialog.open) {
+    elements.historyDialog.showModal();
+  }
+  await renderHistory();
+}
+
+function normalizeSkipTitle(value) {
+  return String(value || "").trim().toLocaleLowerCase();
+}
+
+function normalizeSkipTitles(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  return value.reduce((titles, item) => {
+    if (typeof item !== "string") {
+      return titles;
+    }
+    const title = item.trim();
+    const normalized = normalizeSkipTitle(title);
+    if (title && title.length <= 160 && !seen.has(normalized)) {
+      seen.add(normalized);
+      titles.push(title);
+    }
+    return titles;
+  }, []);
+}
+
+function closeSettingsMenu() {
+  elements.settingsMenu.hidden = true;
+  elements.settingsButton.setAttribute("aria-expanded", "false");
+}
+
+function renderSkipTitleList() {
+  const titles = storageSnapshot.skipTitles;
+  elements.skipTitleList.replaceChildren();
+  elements.skipTitleEmpty.hidden = titles.length > 0;
+  for (const title of titles) {
+    const row = document.createElement("li");
+    row.className = "skip-title-row";
+    row.appendChild(createTextElement("span", "skip-title-text", title));
+    const actions = document.createElement("div");
+    actions.className = "skip-title-actions";
+
+    const editButton = createTextElement("button", "", "Edit");
+    editButton.type = "button";
+    editButton.addEventListener("click", () => {
+      editingSkipTitle = title;
+      elements.skipTitleInput.value = title;
+      elements.skipTitleSubmit.textContent = "Update title";
+      elements.skipTitleCancelEdit.hidden = false;
+      elements.skipTitleError.hidden = true;
+      elements.skipTitleInput.focus();
+    });
+    actions.appendChild(editButton);
+
+    const deleteButton = createTextElement("button", "", "Delete");
+    deleteButton.type = "button";
+    deleteButton.addEventListener("click", () => {
+      const nextTitles = storageSnapshot.skipTitles.filter((item) => (
+        normalizeSkipTitle(item) !== normalizeSkipTitle(title)
+      ));
+      void saveSkipTitles(nextTitles).then(() => {
+        if (editingSkipTitle && normalizeSkipTitle(editingSkipTitle) === normalizeSkipTitle(title)) {
+          resetSkipTitleEditor();
+        }
+        elements.skipTitleError.hidden = true;
+      }).catch((error) => {
+        showSkipTitleError(`Could not delete the title: ${error.message}`);
+      });
+    });
+    actions.appendChild(deleteButton);
+    row.appendChild(actions);
+    elements.skipTitleList.appendChild(row);
+  }
+}
+
+function showSkipTitleError(message) {
+  elements.skipTitleError.textContent = message;
+  elements.skipTitleError.hidden = false;
+}
+
+function resetSkipTitleEditor() {
+  editingSkipTitle = null;
+  elements.skipTitleInput.value = "";
+  elements.skipTitleSubmit.textContent = "Add title";
+  elements.skipTitleCancelEdit.hidden = true;
+}
+
+async function saveSkipTitles(titles) {
+  const normalizedTitles = normalizeSkipTitles(titles);
+  await chrome.storage.local.set({ [getSkipTitlesStorageKey()]: normalizedTitles });
+  storageSnapshot.skipTitles = normalizedTitles;
+  renderSkipTitleList();
+}
+
+async function submitSkipTitle(event) {
+  event.preventDefault();
+  const title = elements.skipTitleInput.value.trim();
+  if (!title) {
+    showSkipTitleError("Enter a job title.");
+    elements.skipTitleInput.focus();
+    return;
+  }
+  if (title.length > 160) {
+    showSkipTitleError("Job titles must be 160 characters or fewer.");
+    return;
+  }
+  const normalized = normalizeSkipTitle(title);
+  const existingIndex = storageSnapshot.skipTitles.findIndex((item) => (
+    normalizeSkipTitle(item) === normalizeSkipTitle(editingSkipTitle || "")
+  ));
+  const duplicate = storageSnapshot.skipTitles.some((item, index) => (
+    index !== existingIndex && normalizeSkipTitle(item) === normalized
+  ));
+  if (duplicate) {
+    showSkipTitleError("That exact title is already on the skip list.");
     return;
   }
 
-  reportDownloadPromise = (async () => {
-    const latestValues = await chrome.storage.local.get([
-      STORAGE_KEYS.runState,
-      STORAGE_KEYS.opened,
-      STORAGE_KEYS.selectedTab
-    ]);
-    const latestState = latestValues[STORAGE_KEYS.runState];
-    if (
-      !latestState
-      || latestState.runId !== requestedRunId
-      || (latestState.state !== "DONE" && latestState.state !== "STOPPED")
-      || (
-        latestState.htmlReportDownloaded
-        && latestState.htmlReportVersion === STANDALONE_REPORT_VERSION
-      )
-    ) {
-      return;
-    }
-    const latestJobs = await readSiteJobs();
-    const records = Object.values(latestJobs).filter((record) => record && typeof record === "object");
-    if (records.length === 0) {
-      return;
-    }
-    const html = buildStandaloneReport(
-      records,
-      latestValues[STORAGE_KEYS.opened],
-      latestState,
-      latestValues[STORAGE_KEYS.selectedTab]
-    );
-    const objectUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
-    try {
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.runState]: {
-          ...latestState,
-          htmlReportDownloaded: true,
-          htmlReportVersion: STANDALONE_REPORT_VERSION
-        }
-      });
-      const downloadLink = document.createElement("a");
-      downloadLink.href = objectUrl;
-      downloadLink.download = reportFilename();
-      downloadLink.hidden = true;
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      downloadLink.remove();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-      setFeedback("Standalone HTML report downloaded.");
-    } catch (error) {
-      URL.revokeObjectURL(objectUrl);
-      setFeedback(`Could not download the HTML report: ${error.message}`);
-    }
-  })().finally(() => {
-    reportDownloadPromise = null;
-  });
-  await reportDownloadPromise;
+  const nextTitles = [...storageSnapshot.skipTitles];
+  if (existingIndex >= 0) {
+    nextTitles[existingIndex] = title;
+  } else {
+    nextTitles.push(title);
+  }
+  elements.skipTitleSubmit.disabled = true;
+  try {
+    await saveSkipTitles(nextTitles);
+    resetSkipTitleEditor();
+    elements.skipTitleError.hidden = true;
+  } catch (error) {
+    showSkipTitleError(`Could not save the title: ${error.message}`);
+  } finally {
+    elements.skipTitleSubmit.disabled = false;
+  }
+}
+
+async function openSkipTitleDialog() {
+  renderSkipTitleList();
+  elements.skipTitleError.hidden = true;
+  if (!elements.skipTitleDialog.open) {
+    elements.skipTitleDialog.showModal();
+  }
+  elements.skipTitleInput.focus();
 }
 
 function createTextElement(tag, className, text) {
@@ -1024,8 +1630,7 @@ function createCompanyMark(record) {
 function createJobRow(record, tab, index) {
   const row = document.createElement("tr");
   const jobId = String(record.jobId || "");
-  const isOpened = storageSnapshot.openedJobsById
-    && storageSnapshot.openedJobsById[jobId] === true;
+  const isOpened = isRecordOpened(record);
   row.className = isOpened ? "is-opened" : "";
   row.tabIndex = 0;
   row.setAttribute("aria-label", `${record.title || "Untitled role"} at ${record.company || "Company not listed"}`);
@@ -1049,6 +1654,26 @@ function createJobRow(record, tab, index) {
   });
 
   const cells = {};
+  cells.select = document.createElement("td");
+  cells.select.className = "select-column";
+  cells.select.setAttribute("data-label", "Select");
+  const selection = document.createElement("input");
+  selection.className = "job-selection";
+  selection.type = "checkbox";
+  selection.checked = selectedJobIds.has(jobId);
+  selection.setAttribute(
+    "aria-label",
+    `Select ${record.title || "job"} at ${record.company || "company"} to hide`
+  );
+  selection.addEventListener("change", () => {
+    if (selection.checked) {
+      selectedJobIds.add(jobId);
+    } else {
+      selectedJobIds.delete(jobId);
+    }
+    updateHideControls();
+  });
+  cells.select.appendChild(selection);
   cells.number = createTextElement("td", "number-column", String(index));
 
   const roleCell = document.createElement("td");
@@ -1226,6 +1851,9 @@ function createJobRow(record, tab, index) {
   cells.apply = applyCell;
 
   for (const column of SITE_ADAPTER.ui.columns) {
+    if (column.id === "number") {
+      row.appendChild(cells.select);
+    }
     row.appendChild(cells[column.id]);
   }
   return row;
@@ -1247,7 +1875,7 @@ function sortRecords(records) {
       const field = textFields[sortState.key];
       comparison = String(first[field] || "").localeCompare(
         String(second[field] || ""), undefined, { sensitivity: "base" }
-      );
+      ) * direction;
     } else {
       comparison = comparePostedRecords(first, second, direction);
     }
@@ -1257,10 +1885,14 @@ function sortRecords(records) {
 }
 
 function chooseInitialTab(records) {
-  const visibleRecords = SITE_ID === "indeed" && elements.hideSponsored.checked
-    ? records.filter((record) => record.sponsored !== true)
-    : records;
+  const visibleRecords = records.filter((record) => (
+    matchesJobFilters(record, storageSnapshot.filterSettings)
+  ));
   const storedTab = storageSnapshot.resultsSelectedTab;
+  if (storedTab === ALL_TAB) {
+    selectedTab = ALL_TAB;
+    return;
+  }
   if (APPLY_TABS.includes(storedTab)) {
     selectedTab = getRecordsForTab(visibleRecords, storedTab).length > 0
       || !APPLY_TABS.some((tab) => tab !== storedTab && getRecordsForTab(visibleRecords, tab).length > 0)
@@ -1268,23 +1900,20 @@ function chooseInitialTab(records) {
       : APPLY_TABS.find((tab) => getRecordsForTab(visibleRecords, tab).length > 0) || storedTab;
     return;
   }
-  selectedTab = APPLY_TABS.find((tab) => getRecordsForTab(visibleRecords, tab).length > 0)
-    || APPLY_TABS[0];
+  selectedTab = ALL_TAB;
 }
 
 function render() {
   try {
     const records = getRecords();
-    const sponsoredHidden = SITE_ID === "indeed" && elements.hideSponsored.checked;
-    const recordsByTab = Object.fromEntries(APPLY_TABS.map((tab) => {
-      const tabRecords = getRecordsForTab(records, tab);
-      return [tab, sponsoredHidden
-        ? tabRecords.filter((record) => record.sponsored !== true)
-        : tabRecords];
-    }));
-    const skippedCount = SITE_ID === "linkedin"
-      ? records.filter((record) => record.applyType === "Unknown").length
-      : 0;
+    const visibleByFilters = records.filter((record) => (
+      matchesJobFilters(record, storageSnapshot.filterSettings)
+    ));
+    const recordsByTab = Object.fromEntries([[ALL_TAB, visibleByFilters], ...APPLY_TABS.map((tab) => {
+      return [tab, getRecordsForTab(records, tab).filter((record) => (
+        matchesJobFilters(record, storageSnapshot.filterSettings)
+      ))];
+    })]);
     const activeRecords = recordsByTab[selectedTab] || [];
     const searchTerm = elements.search.value.trim().toLocaleLowerCase();
     const applicantReviewStatus = elements.applicantReviewFilter.value;
@@ -1293,20 +1922,32 @@ function render() {
         || (record.applicantReviewStatus === "actively-reviewing"
           ? "actively-reviewing"
           : "not-indicated") === applicantReviewStatus)
-      && `${record.title || ""} ${record.company || ""} ${record.postedBy || ""} ${
+      && matchesSearchTerm(
+        `${record.title || ""} ${record.company || ""} ${record.postedBy || ""} ${
         Array.isArray(record.skills) ? record.skills.join(" ") : ""
       } ${SITE_ID === "indeed" ? `${record.location || ""} ${record.locationRaw || ""}` : ""}`
-        .toLocaleLowerCase()
-        .includes(searchTerm)
+          .toLocaleLowerCase(),
+        searchTerm
+      )
     ));
-    const visibleRecords = sortRecords(matchingRecords.filter((record) => (
-      !elements.hideOpened.checked
-      || !storageSnapshot.openedJobsById
-      || storageSnapshot.openedJobsById[String(record.jobId || "")] !== true
-    )).filter((record) => (
-      SITE_ID !== "indeed" || !elements.hideVisited.checked || record.visited !== true
-    )));
+    const visibleRecords = sortRecords(matchingRecords.filter((record) => {
+      const jobId = String(record.jobId || "");
+      const wasOpened = isRecordOpened(record);
+      const wasManuallyHidden = storageSnapshot.hiddenJobsById[jobId] === true;
+      if (showingHiddenJobs) {
+        return wasOpened || wasManuallyHidden;
+      }
+      return (
+        (!storageSnapshot.filterSettings.hideOpened || !wasOpened)
+        && (!storageSnapshot.filterSettings.hideHiddenJobs || !wasManuallyHidden)
+      );
+    }));
+    visibleJobIds = visibleRecords.map((record) => String(record.jobId || ""));
+    elements.showingCount.textContent = `Showing ${visibleRecords.length} of ${matchingRecords.length}`;
 
+    elements.allTab.textContent = `${ALL_TAB} (${recordsByTab[ALL_TAB].length})`;
+    elements.allTab.setAttribute("aria-selected", String(selectedTab === ALL_TAB));
+    elements.allTab.tabIndex = selectedTab === ALL_TAB ? 0 : -1;
     for (const [index, tab] of APPLY_TABS.entries()) {
       const button = getTabButton(tab, index);
       button.textContent = `${TAB_LABELS[tab]} (${recordsByTab[tab].length})`;
@@ -1316,43 +1957,44 @@ function render() {
     const selectedButton = getTabButton(selectedTab);
     elements.panel.setAttribute("aria-labelledby", selectedButton.id);
     document.body.dataset.activeTab = selectedTab;
-    elements.total.textContent = `${records.length} ${records.length === 1 ? "job" : "jobs"}`;
+    const easyApplyCount = records.filter((record) => record.applyType === "Easy Apply").length;
+    const activelyReviewingCount = records.filter(
+      (record) => record.applicantReviewStatus === "actively-reviewing"
+    ).length;
+    const now = Date.now();
+    const freshCount = records.filter((record) => {
+      if (
+        SITE_ID === "indeed"
+        && /^(?:just posted|today)$/i.test(String(record.postedText || "").trim())
+      ) {
+        return true;
+      }
+      const postedAt = SITE_ID === "indeed"
+        ? getIndeedPostedTimestamp(record)
+        : Date.parse(String(record.postedDateEstimate || ""));
+      return Number.isFinite(postedAt) && postedAt <= now && now - postedAt < 24 * 60 * 60 * 1000;
+    }).length;
+    elements.summaryTotal.textContent = String(records.length);
+    elements.summarySite.textContent = SITE_ADAPTER.label;
+    const hiddenCount = records.filter((record) => (
+      storageSnapshot.hiddenJobsById[String(record.jobId || "")] === true
+    )).length;
+    elements.summaryTotalNote.textContent = `${records.length - hiddenCount} visible · ${hiddenCount} hidden`;
+    elements.summaryEasy.textContent = String(easyApplyCount);
+    elements.summaryEasyShare.textContent = `${records.length ? Math.round(easyApplyCount / records.length * 100) : 0}% of jobs`;
+    elements.summaryReviewing.textContent = String(activelyReviewingCount);
+    elements.summaryReviewingShare.textContent = `${records.length ? Math.round(activelyReviewingCount / records.length * 100) : 0}% verified`;
+    elements.summaryFresh.textContent = String(freshCount);
     const runInfo = formatRunDate(storageSnapshot.collectorState);
     elements.subtitle.textContent = runInfo;
     elements.siteRunFooter.textContent = runInfo;
-    const indeedDateCounts = SITE_ID === "indeed"
-      ? records.reduce((counts, record) => {
-        if (record.sponsored === true) {
-          counts.sponsored += 1;
-        } else if (hasIndeedPostedData(record)) {
-          counts.fromList += 1;
-        } else {
-          counts.unavailable += 1;
-        }
-        return counts;
-      }, { fromList: 0, sponsored: 0, unavailable: 0 })
-      : 0;
-    const sponsoredHiddenCount = sponsoredHidden
-      ? indeedDateCounts.sponsored
-      : 0;
-    elements.datesFooter.hidden = SITE_ID !== "indeed";
-    elements.datesFooter.textContent = SITE_ID === "indeed"
-      ? `Dates: ${indeedDateCounts.fromList} from list data, ${indeedDateCounts.sponsored} sponsored (no date), ${indeedDateCounts.unavailable} unavailable`
-      : "";
-    elements.parseWarningFooter.hidden = SITE_ID !== "indeed" || sponsoredHiddenCount === 0;
-    elements.parseWarningFooter.textContent = sponsoredHiddenCount
-      ? `${sponsoredHiddenCount} sponsored hidden`
-      : "";
-    elements.indeedSkippedFooter.hidden = SITE_ID !== "indeed";
-    elements.indeedSkippedFooter.textContent = SITE_ID === "indeed"
-      ? `Skipped: ${Number(storageSnapshot.collectorState && storageSnapshot.collectorState.skippedAppliedCount) || 0} applied, ${Number(storageSnapshot.collectorState && storageSnapshot.collectorState.skippedExpiredCount) || 0} expired`
-      : "";
-    elements.skipped.hidden = SITE_ID !== "linkedin";
-    elements.skipped.textContent = `${skippedCount} skipped (no apply option)`;
+    elements.parseWarningFooter.hidden = true;
+    elements.parseWarningFooter.textContent = "";
     elements.tableBody.replaceChildren();
     visibleRecords.forEach((record, index) => {
       elements.tableBody.appendChild(createJobRow(record, selectedTab, index + 1));
     });
+    updateHideControls();
     for (const column of SITE_ADAPTER.ui.columns.filter((item) => item.sortable)) {
       const key = column.id;
       const isActive = sortState.key === key;
@@ -1371,17 +2013,23 @@ function render() {
     elements.empty.hidden = visibleRecords.length > 0;
     elements.empty.textContent = searchTerm && matchingRecords.length === 0
       ? "No jobs match your search."
-    : SITE_ID === "indeed" && sponsoredHidden && activeRecords.length === 0
-      && getRecordsForTab(records, selectedTab).some((record) => record.sponsored === true)
-      ? "Sponsored jobs are hidden. Uncheck Hide sponsored to include them."
+    : activeRecords.length === 0 && getRecordsForTab(records, selectedTab).length > 0
+      ? "No jobs match the selected filters."
     : applicantReviewStatus && matchingRecords.length === 0 && activeRecords.length > 0
         ? "No jobs match this applicant-review filter."
-      : elements.hideOpened.checked && matchingRecords.length > 0
+      : showingHiddenJobs && matchingRecords.length > 0
+        ? "No opened or manually hidden jobs match the current filters."
+      : storageSnapshot.filterSettings.hideOpened && matchingRecords.length > 0
         ? "All matching jobs have been opened."
-        : SITE_ID === "indeed" && elements.hideVisited.checked
-          && matchingRecords.some((record) => record.visited === true)
-          ? "All matching jobs have been visited."
-        : `No ${TAB_LABELS[selectedTab]} jobs captured yet.`;
+        : storageSnapshot.filterSettings.hideHiddenJobs
+          && matchingRecords.length > 0
+          && matchingRecords.every((record) => (
+            storageSnapshot.hiddenJobsById[String(record.jobId || "")] === true
+          ))
+          ? "All matching jobs are hidden."
+        : selectedTab === ALL_TAB
+          ? "No jobs captured yet."
+          : `No ${TAB_LABELS[selectedTab]} jobs captured yet.`;
     if (!elements.feedback.textContent.startsWith("Could not")) {
       elements.feedback.textContent = "";
     }
@@ -1394,7 +2042,7 @@ function render() {
 }
 
 async function selectTab(tab) {
-  if (!APPLY_TABS.includes(tab)) {
+  if (tab !== ALL_TAB && !APPLY_TABS.includes(tab)) {
     return;
   }
   selectedTab = tab;
@@ -1406,14 +2054,126 @@ async function selectTab(tab) {
   }
 }
 
+function persistFilterSettings() {
+  const settings = normalizeFilterSettings(readFilterControls());
+  storageSnapshot.filterSettings = settings;
+  render();
+  const operation = filterWriteQueue.then(async () => {
+    await chrome.storage.local.set({ [STORAGE_KEYS.filters]: settings });
+  });
+  filterWriteQueue = operation.catch((error) => {
+    setFeedback(`Could not save filters: ${error.message}`);
+  });
+  return filterWriteQueue;
+}
+
+function updateHideControls() {
+  const selectedVisibleCount = visibleJobIds.reduce(
+    (count, jobId) => count + (selectedJobIds.has(jobId) ? 1 : 0),
+    0
+  );
+  if (elements.selectAllJobs) {
+    elements.selectAllJobs.checked = visibleJobIds.length > 0
+      && selectedVisibleCount === visibleJobIds.length;
+    elements.selectAllJobs.indeterminate = selectedVisibleCount > 0
+      && selectedVisibleCount < visibleJobIds.length;
+    elements.selectAllJobs.disabled = visibleJobIds.length === 0;
+  }
+  elements.hideSelectedJobs.disabled = selectedJobIds.size === 0;
+  const hasHiddenOrOpenedJobs = getRecords().some((record) => {
+    return storageSnapshot.hiddenJobsById[String(record.jobId || "")] === true
+      || isRecordOpened(record);
+  });
+  elements.viewHiddenJobs.disabled = !showingHiddenJobs && !hasHiddenOrOpenedJobs;
+  elements.viewHiddenJobs.textContent = showingHiddenJobs ? "View All Jobs" : "View Hidden Jobs";
+  elements.viewHiddenJobs.setAttribute("aria-pressed", String(showingHiddenJobs));
+  const hasActiveFilters = Boolean(
+    elements.search.value.trim()
+    || elements.applicantReviewFilter.value
+    || selectedTab !== ALL_TAB
+    || storageSnapshot.filterSettings.locations.length
+    || storageSnapshot.filterSettings.experienceYears.length
+  );
+  elements.clearHiddenJobs.disabled = !hasActiveFilters && selectedJobIds.size === 0;
+}
+
+async function hideSelectedJobs() {
+  const selectedIds = Array.from(selectedJobIds);
+  if (selectedIds.length === 0) {
+    return;
+  }
+  selectedJobIds.clear();
+  const operation = hiddenWriteQueue.then(async () => {
+    const values = await chrome.storage.local.get(STORAGE_KEYS.hidden);
+    const current = values[STORAGE_KEYS.hidden];
+    const hiddenJobs = current && typeof current === "object" && !Array.isArray(current)
+      ? { ...current }
+      : {};
+    for (const jobId of selectedIds) {
+      hiddenJobs[jobId] = true;
+    }
+    await chrome.storage.local.set({ [STORAGE_KEYS.hidden]: hiddenJobs });
+  });
+  hiddenWriteQueue = operation.catch((error) => {
+    setFeedback(`Could not hide selected jobs: ${error.message}`);
+  });
+  await hiddenWriteQueue;
+  render();
+}
+
+async function toggleHiddenJobsView() {
+  if (showingHiddenJobs) {
+    showingHiddenJobs = false;
+    const tabToRestore = tabBeforeHiddenJobsView || ALL_TAB;
+    tabBeforeHiddenJobsView = null;
+    await selectTab(tabToRestore);
+    return;
+  }
+  const hasHiddenOrOpenedJobs = getRecords().some((record) => {
+    return storageSnapshot.hiddenJobsById[String(record.jobId || "")] === true
+      || isRecordOpened(record);
+  });
+  if (!hasHiddenOrOpenedJobs) {
+    return;
+  }
+  tabBeforeHiddenJobsView = selectedTab;
+  showingHiddenJobs = true;
+  await selectTab(ALL_TAB);
+}
+
+async function clearHiddenJobs() {
+  selectedJobIds.clear();
+  showingHiddenJobs = false;
+  tabBeforeHiddenJobsView = null;
+  elements.search.value = "";
+  elements.applicantReviewFilter.value = "";
+  for (const checkbox of [
+    ...Object.values(elements.locationFilters),
+    ...Object.values(elements.experienceFilters)
+  ]) {
+    checkbox.checked = false;
+  }
+  await persistFilterSettings();
+
+  selectedTab = ALL_TAB;
+  render();
+  try {
+    await chrome.storage.local.set({ [STORAGE_KEYS.selectedTab]: ALL_TAB });
+  } catch (error) {
+    setFeedback(`Could not clear the selected job tab: ${error.message}`);
+  }
+}
+
 async function switchSite(siteId) {
   if (!globalThis.JobCollectorSiteRegistry.getAdapter(siteId)) {
     return;
   }
   try {
+    selectedJobIds.clear();
     await chrome.storage.local.set({ [LAST_SITE_KEY]: siteId });
     const destination = new URL(globalThis.location.href);
-    destination.searchParams.set("site", siteId);
+    destination.search = "";
+    destination.hash = "";
     if (typeof globalThis.location.assign === "function") {
       globalThis.location.assign(destination.href);
       return;
@@ -1434,24 +2194,40 @@ async function initializeResultsPage() {
   if (savedSite !== siteId) {
     await chrome.storage.local.set({ [LAST_SITE_KEY]: siteId });
   }
+  if (globalThis.history && typeof globalThis.history.replaceState === "function") {
+    const canonicalUrl = new URL(globalThis.location.href);
+    canonicalUrl.search = "";
+    canonicalUrl.hash = "";
+    if (canonicalUrl.href !== globalThis.location.href) {
+      globalThis.history.replaceState(null, "", canonicalUrl.href);
+    }
+  }
   renderSiteCounts(preference.records);
   const values = await chrome.storage.local.get([
     STORAGE_KEYS.opened,
+    STORAGE_KEYS.hidden,
     STORAGE_KEYS.runState,
-    STORAGE_KEYS.selectedTab
+    STORAGE_KEYS.selectedTab,
+    STORAGE_KEYS.filters,
+    getSkipTitlesStorageKey(siteId)
   ]);
   storageSnapshot = {
     jobsById: await readSiteJobs(),
     openedJobsById: values[STORAGE_KEYS.opened] || {},
+    hiddenJobsById: values[STORAGE_KEYS.hidden] || {},
+    filterSettings: normalizeFilterSettings(values[STORAGE_KEYS.filters]),
     collectorState: values[STORAGE_KEYS.runState] || null,
-    resultsSelectedTab: values[STORAGE_KEYS.selectedTab] || null
+    resultsSelectedTab: values[STORAGE_KEYS.selectedTab] || null,
+    skipTitles: normalizeSkipTitles(values[getSkipTitlesStorageKey(siteId)])
   };
+  renderSkipTitleList();
+  setFilterControls(storageSnapshot.filterSettings);
   chooseInitialTab(getRecords());
   if (storageSnapshot.resultsSelectedTab !== selectedTab) {
     await chrome.storage.local.set({ [STORAGE_KEYS.selectedTab]: selectedTab });
   }
   render();
-  await maybeDownloadStandaloneReport();
+  setDefaultHistoryRange();
 }
 
 function handleTabKeydown(event, tab) {
@@ -1459,25 +2235,27 @@ function handleTabKeydown(event, tab) {
     return;
   }
   event.preventDefault();
-  const currentIndex = APPLY_TABS.indexOf(tab);
+  const navigationTabs = [ALL_TAB, ...APPLY_TABS];
+  const currentIndex = navigationTabs.indexOf(tab);
   const nextIndex = event.key === "Home"
     ? 0
     : event.key === "End"
-      ? APPLY_TABS.length - 1
-      : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + APPLY_TABS.length) % APPLY_TABS.length;
-  const nextTab = APPLY_TABS[nextIndex];
+      ? navigationTabs.length - 1
+      : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + navigationTabs.length) % navigationTabs.length;
+  const nextTab = navigationTabs[nextIndex];
   const button = getTabButton(nextTab, nextIndex);
   button.focus();
   void selectTab(nextTab);
 }
 
+elements.allTab.addEventListener("click", () => selectTab(ALL_TAB));
 elements.easyTab.addEventListener("click", () => selectTab(APPLY_TABS[0]));
 elements.directTab.addEventListener("click", () => selectTab("Direct Apply"));
 elements.companyTab.addEventListener("click", () => {
   const companyTab = APPLY_TABS.find((tab) => tab === "Company Apply" || tab === "Company Site");
   if (companyTab) void selectTab(companyTab);
 });
-for (const [index, tab] of APPLY_TABS.entries()) {
+for (const [index, tab] of [ALL_TAB, ...APPLY_TABS].entries()) {
   getTabButton(tab, index).addEventListener("keydown", (event) => handleTabKeydown(event, tab));
 }
 elements.linkedinSite.addEventListener("click", () => {
@@ -1489,11 +2267,70 @@ elements.naukriSite.addEventListener("click", () => {
 elements.indeedSite.addEventListener("click", () => {
   void switchSite("indeed");
 });
+elements.settingsButton.addEventListener("click", () => {
+  const open = elements.settingsMenu.hidden;
+  elements.settingsMenu.hidden = !open;
+  elements.settingsButton.setAttribute("aria-expanded", String(open));
+});
+elements.historyButton.addEventListener("click", () => {
+  closeSettingsMenu();
+  void openHistoryDialog().catch((error) => {
+    elements.historyError.textContent = `Could not load job history: ${error.message}`;
+    elements.historyError.hidden = false;
+  });
+});
+elements.historyClose.addEventListener("click", () => {
+  elements.historyDialog.close();
+});
+elements.skipTitlesButton.addEventListener("click", () => {
+  closeSettingsMenu();
+  void openSkipTitleDialog().catch((error) => {
+    showSkipTitleError(`Could not load skip titles: ${error.message}`);
+  });
+});
+elements.skipTitleClose.addEventListener("click", () => {
+  elements.skipTitleDialog.close();
+});
+elements.skipTitleForm.addEventListener("submit", (event) => {
+  void submitSkipTitle(event);
+});
+elements.skipTitleCancelEdit.addEventListener("click", () => {
+  resetSkipTitleEditor();
+  elements.skipTitleError.hidden = true;
+});
+for (const dateInput of [elements.historyFrom, elements.historyTo]) {
+  dateInput.addEventListener("change", () => {
+    void renderHistory().catch((error) => {
+      elements.historyError.textContent = `Could not load job history: ${error.message}`;
+      elements.historyError.hidden = false;
+    });
+  });
+}
+elements.exportButton.addEventListener("click", () => {
+  closeSettingsMenu();
+  void exportStandaloneReport().catch((error) => {
+    setFeedback(`Could not download the HTML report: ${error.message}`);
+  });
+});
 elements.search.addEventListener("input", render);
 elements.applicantReviewFilter.addEventListener("change", render);
-elements.hideOpened.addEventListener("change", render);
-elements.hideVisited.addEventListener("change", render);
-elements.hideSponsored.addEventListener("change", render);
+elements.hideSelectedJobs.addEventListener("click", () => {
+  void hideSelectedJobs();
+});
+elements.viewHiddenJobs.addEventListener("click", () => {
+  void toggleHiddenJobsView();
+});
+elements.clearHiddenJobs.addEventListener("click", () => {
+  void clearHiddenJobs();
+});
+for (const checkbox of [
+  ...Object.values(elements.locationFilters),
+  ...Object.values(elements.experienceFilters)
+]) {
+  checkbox.addEventListener("change", () => {
+    void persistFilterSettings();
+  });
+}
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {
@@ -1505,30 +2342,54 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes[STORAGE_KEYS.jobs]) {
     storageSnapshot.jobsById = unpackSiteJobs(changes[STORAGE_KEYS.jobs].newValue);
     render();
-    void maybeDownloadStandaloneReport().catch((error) => {
-      setFeedback(`Could not prepare the HTML report: ${error.message}`);
-    });
+    if (elements.historyDialog.open) {
+      void renderHistory().catch((error) => {
+        elements.historyError.textContent = `Could not load job history: ${error.message}`;
+        elements.historyError.hidden = false;
+      });
+    }
     return;
   }
   for (const [key, change] of Object.entries(changes)) {
     if (key === STORAGE_KEYS.opened) {
       storageSnapshot.openedJobsById = change.newValue || {};
+    } else if (key === STORAGE_KEYS.hidden) {
+      storageSnapshot.hiddenJobsById = change.newValue || {};
+      updateHideControls();
+    } else if (key === STORAGE_KEYS.filters) {
+      storageSnapshot.filterSettings = normalizeFilterSettings(change.newValue);
+      setFilterControls(storageSnapshot.filterSettings);
     } else if (key === STORAGE_KEYS.runState) {
       storageSnapshot.collectorState = change.newValue || null;
     } else if (key === STORAGE_KEYS.selectedTab) {
       storageSnapshot.resultsSelectedTab = change.newValue || null;
+    } else if (key === getSkipTitlesStorageKey()) {
+      storageSnapshot.skipTitles = normalizeSkipTitles(change.newValue);
+      renderSkipTitleList();
     }
   }
   if (
     changes[STORAGE_KEYS.selectedTab]
-    && APPLY_TABS.includes(changes[STORAGE_KEYS.selectedTab].newValue)
+    && (
+      changes[STORAGE_KEYS.selectedTab].newValue === ALL_TAB
+      || APPLY_TABS.includes(changes[STORAGE_KEYS.selectedTab].newValue)
+    )
   ) {
     selectedTab = changes[STORAGE_KEYS.selectedTab].newValue;
   }
   render();
-  void maybeDownloadStandaloneReport().catch((error) => {
-    setFeedback(`Could not prepare the HTML report: ${error.message}`);
-  });
+  if (
+    elements.historyDialog.open
+    && (
+      changes.records
+      || HISTORY_OPENED_KEYS.some((key) => changes[key])
+    )
+  ) {
+    void renderHistory().catch((error) => {
+      elements.historyError.textContent = `Could not load job history: ${error.message}`;
+      elements.historyError.hidden = false;
+    });
+  }
 });
 
 initializeResultsPage().catch((error) => {

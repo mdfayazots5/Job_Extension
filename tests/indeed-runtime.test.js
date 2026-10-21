@@ -105,6 +105,120 @@ async function testIndeedRunLoop() {
   console.log("PASS Indeed run loop: two pages, last page, prepare-before-click, Stop interruption, Cloudflare detection.");
 }
 
+async function testIndeedCollectorSkipTitles() {
+  const store = {
+    "indeed:skipTitles": ["Indeed Role"],
+    "runs.indeed": {
+      siteId: "indeed",
+      runId: "skip-title-test",
+      state: "RUNNING",
+      pageNumber: 1,
+      capturedCount: 0
+    }
+  };
+  const savedRecords = [];
+  let finishedRun = null;
+  let messageListener = null;
+  let clock = Date.now();
+  class FastDate extends Date {
+    static now() { return clock; }
+  }
+  const dom = new JSDOM(`
+    <div id="mosaic-provider-jobcards">
+      <div class="job_seen_beacon">
+        <a class="jcs-JobTitle" data-jk="0123456789abcdef" href="/viewjob?jk=0123456789abcdef">
+          <h3 class="jobTitle"><span title="Indeed Role">Indeed Role</span></h3>
+        </a>
+      </div>
+      <div class="job_seen_beacon">
+        <a class="jcs-JobTitle" data-jk="1123456789abcdef" href="/viewjob?jk=1123456789abcdef">
+          <h3 class="jobTitle"><span title="Indeed Role II">Indeed Role II</span></h3>
+        </a>
+      </div>
+    </div>
+  `, { url: "https://in.indeed.com/jobs?q=developer" });
+  const document = dom.window.document;
+  Object.defineProperty(document, "visibilityState", { value: "visible" });
+  const window = {
+    location: { href: document.URL },
+    innerHeight: 800,
+    addEventListener() {},
+    scrollBy() {}
+  };
+  const chrome = {
+    runtime: {
+      async sendMessage(message) {
+        if (message.type === "INDEED_RESUME_CHECK") {
+          return { ok: true, resume: false };
+        }
+        if (message.type === "SAVE_CAPTURE") {
+          savedRecords.push(message.record);
+        } else if (message.type === "INDEED_RUN_FINISHED") {
+          finishedRun = message;
+          store["runs.indeed"].state = "DONE";
+        }
+        return { ok: true };
+      },
+      onMessage: {
+        addListener(listener) { messageListener = listener; }
+      }
+    },
+    storage: {
+      local: {
+        async get(keys) {
+          if (Array.isArray(keys)) {
+            return Object.fromEntries(keys
+              .filter((key) => key in store)
+              .map((key) => [key, store[key]]));
+          }
+          return keys in store ? { [keys]: store[keys] } : {};
+        }
+      }
+    }
+  };
+  const context = vm.createContext({
+    URL,
+    Date: FastDate,
+    Math,
+    chrome,
+    console,
+    document,
+    window,
+    location: { origin: "https://in.indeed.com" },
+    setTimeout(callback, milliseconds) {
+      clock += milliseconds;
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearTimeout() {}
+  });
+  loadScripts(context, [
+    "src/sites/indeed/config.js",
+    "src/sites/indeed/selectors.js",
+    "src/sites/indeed/parse.js",
+    "src/sites/indeed/adapter.js",
+    "src/core/run-loop.js",
+    "src/sites/indeed/collector.js"
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const started = await new Promise((resolve) => {
+    messageListener({
+      type: "START_RUN",
+      siteId: "indeed",
+      runId: "skip-title-test"
+    }, {}, resolve);
+  });
+  assert.equal(started.ok, true);
+  for (let attempt = 0; attempt < 100 && !finishedRun; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.ok(finishedRun, "Indeed collector should finish the test run");
+  assert.deepEqual(savedRecords.map((record) => record.title), ["Indeed Role II"]);
+  assert.equal(savedRecords[0].url, "https://in.indeed.com/viewjob?jk=1123456789abcdef");
+  dom.window.close();
+  console.log("PASS Indeed collector: configured full-title matches are skipped, similar titles are captured.");
+}
+
 async function testIndeedBackground() {
   const store = {};
   const createdTabs = [];
@@ -205,7 +319,6 @@ async function testIndeedBackground() {
   assert.equal(state.searchUrl, "https://in.indeed.com/jobs?q=developer");
   assert.doesNotMatch(JSON.stringify(state), /tracking|token|csrf/i);
   assert.doesNotMatch(JSON.stringify(store), /tracking|token|csrf/i);
-  assert.equal(store["budgets.indeed"].runsToday, 1);
   assert.ok(store["budgets.indeed"].lastRunAt);
   await background.handleMessage({
     type: "INDEED_PAGE_DIAGNOSTICS",
@@ -365,7 +478,6 @@ async function testIndeedBackground() {
   assert.equal(createdTabs.length, 2);
 
   store["budgets.indeed"].lastRunAt = new Date(Date.now() - 61 * 60 * 1000).toISOString();
-  store["budgets.indeed"].runsToday = 0;
   await background.handleMessage({ type: "START_RUN", siteId: "indeed" }, ownSender);
   state = store["runs.indeed"];
   await background.handleMessage({
@@ -404,16 +516,9 @@ async function testIndeedBackground() {
   assert.equal(store["cooldown.indeed"].until - store["cooldown.indeed"].lastBlockAt, 48 * 60 * 60 * 1000);
 
   store["cooldown.indeed"].until = 0;
-  store["budgets.indeed"].runsToday = 1;
+  store["budgets.indeed"].runsToday = 50;
   store["budgets.indeed"].lastRunAt = new Date().toISOString();
 
-  store["budgets.indeed"].runsToday = 3;
-  await assert.rejects(
-    background.handleMessage({ type: "START_RUN", siteId: "indeed" }, ownSender),
-    /Daily Indeed run limit/
-  );
-  store["budgets.indeed"].runsToday = 0;
-  store["budgets.indeed"].runsToday = 0;
   await background.handleMessage({ type: "START_RUN", siteId: "indeed" }, ownSender);
   state = store["runs.indeed"];
   await background.handleMessage({
@@ -462,6 +567,7 @@ async function testIndeedBackground() {
 
 Promise.resolve()
   .then(testIndeedRunLoop)
+  .then(testIndeedCollectorSkipTitles)
   .then(testIndeedBackground)
   .then(() => console.log("Indeed runtime simulations passed."))
   .catch((error) => {

@@ -25,6 +25,7 @@
   let unhandledExceptionCount = 0;
   let circuitTriggered = false;
   let activePageNumber = 1;
+  let activeRunSavedCount = 0;
   let detailPaneLoadInFlight = false;
   let diagnosticsWriteQueue = Promise.resolve();
 
@@ -805,6 +806,7 @@
       stopRequested = true;
       wakeWaiters();
     } else if (response.saved) {
+      activeRunSavedCount += 1;
       await writeProgress(runId, pageNumber, response.stats);
     }
     return {
@@ -846,7 +848,7 @@
     });
   }
 
-  async function processCard(runId, entry, container, pageNumber, errors) {
+  async function processCard(runId, entry, container, pageNumber, errors, seenStoredJobIds, skipTitles) {
     await ensureVisible(runId);
     checkBlockingPage(errors);
     const currentJob = entry.card.isConnected
@@ -873,6 +875,16 @@
 
     const storedJobs = await awaitWithStop(runId, readStoredJobs());
     if (Object.prototype.hasOwnProperty.call(storedJobs, entry.jobId)) {
+      seenStoredJobIds.add(entry.jobId);
+      return { saved: false, stats: getStats(storedJobs) };
+    }
+    const listDetails = selectors.getListCardDetails(live.card, errors);
+    if (adapter.shouldSkipRole({ title: listDetails.title }, skipTitles)) {
+      await writeDiagnostic(runId, "job-skipped-role", {
+        jobId: entry.jobId,
+        pageNumber,
+        title: listDetails.title
+      });
       return { saved: false, stats: getStats(storedJobs) };
     }
     const budgetValues = await awaitWithStop(
@@ -884,7 +896,7 @@
       return { saved: false, stats: getStats(storedJobs) };
     }
     if (
-      Object.keys(storedJobs).length >= config.maxJobsPerRun
+      activeRunSavedCount >= config.maxJobsPerRun
       || budget.jobsToday >= config.maxJobsPerDay
     ) {
       throw new JobLimitError();
@@ -892,6 +904,14 @@
 
     if (!config.clickCards) {
       const record = extractListRecord(live.card, entry.jobId, pageNumber, errors);
+      if (adapter.shouldSkipRole(record, skipTitles)) {
+        await writeDiagnostic(runId, "job-skipped-role", {
+          jobId: entry.jobId,
+          pageNumber,
+          title: record.title
+        });
+        return { saved: false, stats: getStats(storedJobs) };
+      }
       const saved = await saveRecord(runId, record, pageNumber);
       await writeDiagnostic(runId, saved.saved ? "job-captured" : "job-already-captured", {
         jobId: entry.jobId,
@@ -957,6 +977,14 @@
         errors,
         live.card
       );
+      if (adapter.shouldSkipRole(record, skipTitles)) {
+        await writeDiagnostic(runId, "job-skipped-role", {
+          jobId: entry.jobId,
+          pageNumber,
+          title: record.title
+        });
+        return { saved: false, stats: getStats(await readStoredJobs()) };
+      }
       const saved = await saveRecord(runId, record, pageNumber);
       await writeDiagnostic(runId, saved.saved ? "job-captured" : "job-already-captured", {
         jobId: entry.jobId,
@@ -970,10 +998,18 @@
   }
 
   async function collectPageWork(runId, pageNumber) {
+    const skipTitleSettings = await awaitWithStop(
+      runId,
+      chrome.storage.local.get("linkedin:skipTitles")
+    );
+    const skipTitles = Array.isArray(skipTitleSettings["linkedin:skipTitles"])
+      ? skipTitleSettings["linkedin:skipTitles"]
+      : [];
     let stats = getStats(await awaitWithStop(runId, readStoredJobs()));
     const errors = [];
     const pending = [];
     const seenJobIds = new Set();
+    const seenStoredJobIds = new Set();
     const processedJobIds = new Set();
     let observer = null;
     let container = null;
@@ -1017,7 +1053,7 @@
         try {
           const result = await awaitWithStop(
             runId,
-            processCard(runId, entry, container, pageNumber, errors)
+            processCard(runId, entry, container, pageNumber, errors, seenStoredJobIds, skipTitles)
           );
           stats = result.stats;
           consecutiveLoadFailures = 0;
@@ -1098,7 +1134,7 @@
         await awaitWithStop(runId, Promise.resolve());
         checkBlockingPage(errors);
         stats = getStats(await awaitWithStop(runId, readStoredJobs()));
-        if (stats.capturedCount >= config.maxJobsPerRun) {
+        if (activeRunSavedCount >= config.maxJobsPerRun) {
           throw new JobLimitError();
         }
 
@@ -1132,6 +1168,19 @@
       }
 
       await awaitWithStop(runId, processPendingCards());
+      if (seenStoredJobIds.size > 0) {
+        const response = await awaitWithStop(runId, chrome.runtime.sendMessage({
+          type: "TOUCH_SEEN_JOBS",
+          siteId: adapter.id,
+          runId,
+          jobIds: Array.from(seenStoredJobIds)
+        }));
+        if (!response || !response.ok) {
+          throw new Error(response && response.error
+            ? response.error
+            : "The service worker did not update previously captured jobs.");
+        }
+      }
       return stats;
     } finally {
       if (observer) {
@@ -1619,6 +1668,9 @@
         }
         activeRunId = runId;
         activeSearchUrl = normalizeSearchUrl(state.searchUrl || window.location.href);
+        activeRunSavedCount = Number.isInteger(state.runCapturedCount)
+          ? state.runCapturedCount
+          : 0;
         stopRequested = false;
         const jobs = await awaitWithStop(runId, readStoredJobs());
         await awaitWithStop(runId, chrome.storage.local.set({

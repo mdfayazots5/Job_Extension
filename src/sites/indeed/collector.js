@@ -121,7 +121,7 @@
       throw new IndeedBlockError(block);
     }
     if (!adapter.matchesUrl(url)) {
-      throw new Error("Open an Indeed /jobs search page with a q= search term to start.");
+      throw new Error("Open an Indeed jobs search page with a query term to start.");
     }
   }
 
@@ -205,6 +205,10 @@
           throw new IndeedBlockError("Indeed returned 0 usable job records on a results page.");
         }
 
+        const skipTitleSettings = await chrome.storage.local.get("indeed:skipTitles");
+        const skipTitles = Array.isArray(skipTitleSettings["indeed:skipTitles"])
+          ? skipTitleSettings["indeed:skipTitles"]
+          : [];
         const pageIds = new Set();
         for (const rawRecord of records) {
           await checkRunning(currentRunId);
@@ -222,13 +226,17 @@
             });
             continue;
           }
+          const normalized = adapter.normalize({
+            ...rawRecord,
+            pageNumber: currentPage
+          });
+          if (adapter.shouldSkipRole(normalized, skipTitles)) {
+            continue;
+          }
           const response = await send({
             type: "SAVE_CAPTURE",
             runId: currentRunId,
-            record: adapter.normalize({
-              ...rawRecord,
-              pageNumber: currentPage
-            })
+            record: normalized
           });
           if (response.limitReached) {
             await send({
@@ -368,7 +376,7 @@
         ok: connected,
         ready,
         error: connected && !ready
-          ? "Open an Indeed /jobs search page with q= and #mosaic-provider-jobcards to start."
+          ? "Open an Indeed jobs search page with a query and #mosaic-provider-jobcards to start."
           : undefined
       });
       return false;
@@ -395,7 +403,7 @@
 
     (async () => {
       if (!hasResultsPage()) {
-        throw new Error("Open an Indeed /jobs search page with q= and #mosaic-provider-jobcards to start.");
+        throw new Error("Open an Indeed jobs search page with a query and #mosaic-provider-jobcards to start.");
       }
       if (typeof message.runId !== "string" || !message.runId) {
         throw new Error("START_RUN requires a run ID.");

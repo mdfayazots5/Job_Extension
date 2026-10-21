@@ -12,7 +12,9 @@
       runState: `runs.${siteId}`,
       jobs: RECORDS_KEY,
       openedJobs: `opened.${siteId}`,
+      hiddenJobs: `hidden.${siteId}`,
       selectedTab: `ui.${siteId}.selectedTab`,
+      filters: `ui.${siteId}.filters`,
       progress: `progress.${siteId}`,
       diagnostics: `diagnostics.${siteId}`,
       flowLogging: `debug.${siteId}`,
@@ -54,10 +56,12 @@
     const next = Object.fromEntries(
       Object.entries(current).filter(([key]) => !key.startsWith(prefix))
     );
-    const cutoff = Date.now() - RECORD_RETENTION_MS;
+    const cutoff = siteId === "linkedin"
+      ? null
+      : Date.now() - RECORD_RETENTION_MS;
     for (const [jobId, record] of Object.entries(jobsById)) {
       const capturedAt = Date.parse(record && record.capturedAt);
-      if (Number.isFinite(capturedAt) && capturedAt < cutoff) {
+      if (cutoff !== null && Number.isFinite(capturedAt) && capturedAt < cutoff) {
         continue;
       }
       next[`${prefix}${jobId}`] = record;
