@@ -1,0 +1,9 @@
+{
+    "path":  "C:\\Live\\Job_Extension\\native-host\\publish\\JobHistoryHost.exe",
+    "description":  "Local append-only Job Extensions history backup",
+    "name":  "com.jobextensions.history",
+    "allowed_origins":  [
+                            "chrome-extension://mcmlpkfikipagohcahncghpaonhionpp/"
+                        ],
+    "type":  "stdio"
+}

@@ -1,0 +1,2 @@
+C:\Live\Job_Extension\native-host\publish\JobHistoryHost.pdb
+C:\Live\Job_Extension\native-host\publish\JobHistoryHost.exe

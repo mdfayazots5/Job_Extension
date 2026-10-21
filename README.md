@@ -12,13 +12,17 @@ The results page has independent, saved location filters for Hyderabad, Bengalur
 
 The results view uses one extension URL for all platforms. Its selected platform is remembered in local extension storage rather than encoded in the URL.
 
-Use the **Settings** gear on the results page to open **History**, **Export**, and **Skip Title**. Skip titles are managed for the currently selected platform and saved locally under that site's namespace. A title is skipped only when the entire job title matches (case-insensitive, ignoring surrounding spaces); similar or longer titles are still captured. The former built-in title exclusions have been removed.
+Use the **Settings** gear on the results page to open **History**, **Export**, and **Skip Title**. Skip titles are managed for the currently selected platform and saved under that site's namespace. They are restored from the local archive after an extension reinstall. A title is skipped only when the entire job title matches (case-insensitive, ignoring surrounding spaces); similar or longer titles are still captured. The former built-in title exclusions have been removed.
 
 ## Install
 
 1. Open `chrome://extensions`.
 2. Enable Developer mode.
 3. Choose **Load unpacked** and select this project folder.
+4. In PowerShell, run `.\native-host\install.ps1` from the project folder. This builds and registers the local native-messaging helper for the extension ID shown in the script; pass `-ExtensionId <id>` if Chrome displays a different ID.
+5. Reload the extension in `chrome://extensions`.
+
+The native host appends job snapshots and durable settings to `job-history-backup.jsonl` in this folder and the file is excluded from Git. Do not delete or move the archive if you want reinstall recovery. Keep a separate copy when moving the project or device.
 
 ## Supported sites and limits
 
@@ -46,7 +50,7 @@ The extension uses only `storage`, `scripting`, `tabs`, and `alarms`; host acces
 
 The results page and service worker load site adapters, but they do not inject a site's content scripts into another site's page. No cookies, authentication tokens, or CSRF values are read or stored. LinkedIn and Indeed job links are canonicalized; Naukri listing links discard query strings while the site-provided Company Apply redirect is retained for its intended Apply action. Indeed run state stores only the `q` term, and Naukri diagnostics record URL paths rather than query strings.
 
-LinkedIn records are retained across runs and are deduplicated by job ID; re-seen jobs refresh their `lastSeenAt` value, and LinkedIn records are not automatically expired. Naukri and Indeed records older than 30 days are pruned on the next write for that site; matching opened-state entries are pruned with their records. LinkedIn uses Chrome local storage, so its available storage quota still applies. Site diagnostics are limited to 200 entries and 30 days.
+Job records for all three sites are retained across runs and deduplicated by site and job ID. The append-only `job-history-backup.jsonl` archive also preserves Skip Titles, opened/hidden status, filters, selected tabs, and budget/cooldown/kill-switch safety state. Temporary run progress and diagnostics remain local-only. The archive is excluded from Git and is never automatically deleted. On extension install or browser startup, archived records and settings are restored to local extension storage. Chrome local storage remains the working copy and is subject to Chrome's quota; keep the native archive and back it up separately if the extension folder or device is moved.
 
 ## Naukri flow diagnostics
 
