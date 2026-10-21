@@ -10,6 +10,7 @@
    * @typedef {SiteMessage & {type:"START_RUN"}} StartRunMessage
    * @typedef {SiteMessage & {type:"STOP_RUN"}} StopRunMessage
    * @typedef {SiteMessage & {type:"SAVE_CAPTURE",record:Object}} SaveCaptureMessage
+   * @typedef {SiteMessage & {type:"TOUCH_SEEN_JOBS",jobIds:string[]}} TouchSeenJobsMessage
    * @typedef {SiteMessage & {type:"DIAGNOSTIC_EVENT",event:string,details:Object}} DiagnosticMessage
    * @typedef {SiteMessage & {type:"PAUSE_RUN"|"RESUME_RUN"|"VISIBILITY_TIMEOUT"}} RunControlMessage
    * @typedef {{ok:true}} SuccessResponse

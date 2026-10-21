@@ -7,27 +7,18 @@ const vm = require("node:vm");
 async function run() {
   const elements = new Map();
   const storageListeners = [];
+  const createdTabs = [];
   for (const id of [
     "start",
     "stop",
-    "state",
-    "current-page",
-    "captured-count",
-    "max-pages",
-    "max-jobs",
-    "jobs-today",
-    "max-jobs-today",
-    "budget-status",
-    "skipped-status",
-    "notice",
     "view-results"
   ]) {
+    const listeners = {};
     elements.set(id, {
-      textContent: "",
-      hidden: false,
       disabled: false,
-      href: "",
-      addEventListener() {}
+      title: "",
+      addEventListener(name, callback) { listeners[name] = callback; },
+      async dispatch(name) { return listeners[name]?.({ target: this }); }
     });
   }
   const state = {
@@ -48,6 +39,7 @@ async function run() {
     },
     "budgets.indeed": {
       jobsToday: 4,
+      runsToday: 50,
       dayKey: (() => {
         const date = new Date();
         return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -60,6 +52,9 @@ async function run() {
     tabs: {
       async query() {
         return [{ url: "https://in.indeed.com/jobs?q=developer" }];
+      },
+      async create(options) {
+        createdTabs.push(options);
       }
     },
     storage: {
@@ -74,15 +69,17 @@ async function run() {
         addListener(listener) { storageListeners.push(listener); }
       }
     },
-    runtime: { async sendMessage() { return { ok: true }; } }
+    runtime: {
+      getURL(path) { return `chrome-extension://collector-test/${path}`; },
+      async sendMessage() { return { ok: true }; }
+    }
   };
   const adapter = {
     id: "indeed",
     limits: {
       maxPages: 50,
       maxJobsPerRun: 500,
-      maxJobsPerDay: 2000,
-      maxRunsPerDay: 3
+      maxJobsPerDay: 2000
     }
   };
   const context = vm.createContext({
@@ -113,22 +110,27 @@ async function run() {
   vm.runInContext(fs.readFileSync("popup.js", "utf8"), context);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.equal(elements.get("skipped-status").hidden, false);
-  assert.equal(elements.get("skipped-status").textContent, "Skipped: 3 applied, 1 expired");
-  assert.equal(elements.get("captured-count").textContent, "4");
-  assert.equal(elements.get("budget-status").textContent, "");
   assert.equal(elements.get("start").disabled, false);
-  assert.doesNotMatch(elements.get("notice").textContent, /per-run job limit reached/i);
-  assert.equal(store["notices.indeed"].text, "");
+  assert.equal(store["ui.lastSite"], "indeed");
+  await elements.get("view-results").dispatch("click");
+  assert.deepEqual(JSON.parse(JSON.stringify(createdTabs)), [{
+    url: "chrome-extension://collector-test/results.html"
+  }]);
 
   state.skippedAppliedCount = 5;
   state.skippedExpiredCount = 2;
   for (const listener of storageListeners) {
     listener({ "runs.indeed": { newValue: state } }, "local");
   }
-  assert.equal(elements.get("skipped-status").textContent, "Skipped: 5 applied, 2 expired");
   assert.equal(elements.get("start").disabled, false);
-  console.log("Popup tests passed: Indeed skipped counts update and Start is available after a run.");
+  assert.deepEqual(
+    [...elements.keys()],
+    ["start", "stop", "view-results"]
+  );
+  const popupHtml = fs.readFileSync("popup.html", "utf8");
+  assert.equal((popupHtml.match(/<button\b/g) || []).length, 3);
+  assert.doesNotMatch(popupHtml, /Jobs this run|Jobs today|<output|<h1/);
+  console.log("Popup tests passed: compact three-button controls and View opens the results tab.");
 }
 
 run().catch((error) => {

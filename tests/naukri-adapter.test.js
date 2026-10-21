@@ -17,6 +17,11 @@ for (const file of [
 
 const selectors = context.JobCollectorNaukriSelectors;
 const adapter = context.JobCollectorNaukriAdapter;
+assert.equal(context.JobCollectorNaukriConfig.excludedRoleTerms, undefined);
+assert.equal(adapter.shouldSkipRole({ title: "Software Engineer" }), false);
+assert.equal(adapter.shouldSkipRole({ title: "Python Developer" }, ["Python Developer"]), true);
+assert.equal(adapter.shouldSkipRole({ title: "Pythonista Developer" }, ["Python"]), false);
+assert.equal(adapter.shouldSkipRole({ title: "Customer Support Executive" }, ["Customer Support"]), false);
 const fixturePath = path.join(__dirname, "fixtures", "naukri-search-results.html");
 const fixture = new JSDOM(fs.readFileSync(fixturePath, "utf8"));
 const capturedAt = "2026-10-17T10:32:40.983Z";

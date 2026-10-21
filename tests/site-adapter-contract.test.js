@@ -13,7 +13,7 @@ function load(context, files) {
 function assertAdapterContract(adapter) {
   assert.equal(typeof adapter.id, "string");
   assert.equal(typeof adapter.label, "string");
-  for (const method of ["matchesUrl", "detectBlock", "getCurrentPage", "collectPage", "hasNextPage", "goNextPage", "normalize"]) {
+  for (const method of ["matchesUrl", "detectBlock", "getCurrentPage", "collectPage", "hasNextPage", "goNextPage", "normalize", "shouldSkipRole"]) {
     assert.equal(typeof adapter[method], "function", `${adapter.id}.${method}`);
   }
   assert.ok(adapter.limits && typeof adapter.limits === "object");
@@ -46,5 +46,6 @@ load(indeed, [
 ]);
 assertAdapterContract(indeed.JobCollectorIndeedAdapter);
 assert.equal(indeed.JobCollectorIndeedAdapter.matchesUrl(new URL("https://in.indeed.com/jobs?q=engineer")), true);
+assert.equal(indeed.JobCollectorIndeedAdapter.matchesUrl(new URL("https://in.indeed.com/q-data-engineer-jobs")), true);
 assert.equal(indeed.JobCollectorIndeedAdapter.matchesUrl(new URL("https://in.indeed.com/viewjob?jk=0123456789abcdef")), false);
 console.log("Site adapter contract tests passed: LinkedIn, Naukri, and Indeed conform.");

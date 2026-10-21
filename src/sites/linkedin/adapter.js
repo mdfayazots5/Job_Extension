@@ -74,6 +74,15 @@
     };
   }
 
+  function shouldSkipRole(record, skipTitles = []) {
+    const title = String(record && record.title || "").trim().toLocaleLowerCase();
+    return title !== "" && Array.isArray(skipTitles) && skipTitles.some((skipTitle) => (
+      typeof skipTitle === "string"
+      && skipTitle.trim() !== ""
+      && skipTitle.trim().toLocaleLowerCase() === title
+    ));
+  }
+
   global.JobCollectorLinkedInAdapter = Object.freeze({
     id: "linkedin",
     label: "LinkedIn",
@@ -86,6 +95,7 @@
     hasNextPage,
     goNextPage,
     normalize,
+    shouldSkipRole,
     limits: Object.freeze({
       maxPages: config.maxPages,
       maxJobsPerRun: config.maxJobsPerRun,

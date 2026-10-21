@@ -27,6 +27,13 @@ const parser = context.JobCollectorIndeedParser;
 assert.equal(adapter.limits.maxPages, 50);
 assert.equal(adapter.limits.maxJobsPerRun, 500);
 assert.equal(adapter.limits.maxJobsPerDay, 2000);
+assert.equal(context.JobCollectorIndeedConfig.excludedRoleTerms, undefined);
+assert.equal(adapter.shouldSkipRole({ title: "Software Engineer" }), false);
+assert.equal(adapter.shouldSkipRole({ title: "Software Engineer" }, ["Software Engineer"]), true);
+assert.equal(adapter.shouldSkipRole({ title: " software engineer " }, ["Software Engineer"]), true);
+assert.equal(adapter.shouldSkipRole({ title: "Senior Software Engineer" }, ["Software Engineer"]), false);
+assert.equal(adapter.shouldSkipRole({ title: "Software Engineer II" }, ["Software Engineer"]), false);
+assert.equal(adapter.shouldSkipRole({ title: ".NET Developer" }, [".NET Developer"]), true);
 assert.deepEqual(
   JSON.parse(JSON.stringify(context.JobCollectorIndeedConfig.pageDelayMs)),
   { min: 4000, max: 8000 }
@@ -399,7 +406,7 @@ const asyncRecords = await adapter.collectPage({
 });
 assert.equal(asyncRecords.length, records.length);
 assert.equal(adapter.matchesUrl(new URL("https://in.indeed.com/jobs?q=developer")), true);
-assert.equal(adapter.matchesUrl(new URL("https://in.indeed.com/q-developer-jobs.html")), false);
+assert.equal(adapter.matchesUrl(new URL("https://in.indeed.com/q-developer-jobs.html")), true);
 assert.equal(adapter.matchesUrl(new URL("https://indeed.com/jobs?q=developer")), false);
 assert.equal(adapter.getCurrentPage(doc, new URL("https://in.indeed.com/jobs?q=developer&start=20")), 2);
 assert.equal(adapter.getCurrentPage(null, new URL("https://in.indeed.com/jobs?q=developer&start=20")), 3);

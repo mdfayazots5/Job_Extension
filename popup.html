@@ -6,43 +6,26 @@
     <title>LinkedIn Jobs</title>
     <style>
       :root { color-scheme: light dark; font: 14px system-ui, sans-serif; }
-      body { box-sizing: border-box; margin: 0; min-width: 280px; padding: 16px; }
-      h1 { font-size: 17px; margin: 0 0 14px; }
-      .controls { display: flex; flex-wrap: wrap; gap: 8px; }
-      button { border: 0; border-radius: 7px; cursor: pointer; font: inherit; padding: 8px 14px; }
+      body { box-sizing: border-box; margin: 0; width: 220px; padding: 10px; }
+      .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+      button { display: inline-flex; min-width: 0; min-height: 34px; align-items: center; justify-content: center; border: 0; border-radius: 6px; cursor: pointer; font: 600 12px system-ui, sans-serif; padding: 6px 8px; }
       button:focus-visible, a:focus-visible { outline: 3px solid #4387ff; outline-offset: 2px; }
       #start { background: #0a66c2; color: #fff; }
       #stop { background: #b73a4b; color: #fff; }
       button:disabled { cursor: not-allowed; opacity: .5; }
-      .status { display: grid; gap: 5px; margin: 14px 0; }
-      .status p { margin: 0; }
-      #budget-status { color: #515d69; font-size: 12px; line-height: 1.45; }
-      #notice { color: #666; min-height: 1.25em; }
-      a { color: #0a66c2; }
+      #view-results { background: #edf3fa; color: #174f86; }
       @media (prefers-color-scheme: dark) {
-        #notice { color: #bbb; }
-        #budget-status { color: #c1cad2; }
-        a { color: #76b6ff; }
+        #view-results { background: #283746; color: #a9d2ff; }
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>Job Extensions</h1>
       <section class="controls" aria-label="Collector controls">
         <button id="start" type="button">Start</button>
         <button id="stop" type="button">Stop</button>
+        <button id="view-results" type="button">View</button>
       </section>
-      <section class="status" aria-label="Collector status">
-        <p>State: <output id="state">IDLE</output></p>
-        <p>Page: <output id="current-page">—</output> / <output id="max-pages">—</output></p>
-        <p>Jobs this run: <output id="captured-count">0</output> / <output id="max-jobs">—</output></p>
-        <p>Jobs today: <output id="jobs-today">0</output> / <output id="max-jobs-today">—</output></p>
-        <p id="skipped-status" hidden></p>
-        <p id="budget-status" aria-live="polite"></p>
-        <p id="notice" role="status" aria-live="polite">No jobs captured</p>
-      </section>
-      <a id="view-results" href="results.html" target="_blank" rel="noopener noreferrer">View results</a>
     </main>
     <script src="config.js"></script>
     <script src="src/core/storage.js"></script>

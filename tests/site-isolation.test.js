@@ -25,7 +25,7 @@ const linkedin = storage.keysForSite("linkedin");
 const naukri = storage.keysForSite("naukri");
 const indeed = storage.keysForSite("indeed");
 
-for (const key of ["runState", "openedJobs", "selectedTab", "progress", "diagnostics", "flowLogging", "notice", "budget", "cooldown", "killSwitch"]) {
+for (const key of ["runState", "openedJobs", "hiddenJobs", "selectedTab", "filters", "progress", "diagnostics", "flowLogging", "notice", "budget", "cooldown", "killSwitch"]) {
   assert.notEqual(linkedin[key], naukri[key], `${key} must be per site`);
   assert.notEqual(linkedin[key], indeed[key], `${key} must be per site`);
   assert.notEqual(naukri[key], indeed[key], `${key} must be per site`);
@@ -66,7 +66,7 @@ Promise.resolve()
     [indeed.flowLogging]: true
   }))
   .then(async () => {
-    assert.deepEqual(Object.keys(await storage.getJobs("linkedin")), ["101"]);
+    assert.deepEqual(Object.keys(await storage.getJobs("linkedin")), ["101", "old"]);
     assert.deepEqual(Object.keys(await storage.getJobs("naukri")), ["202"]);
     assert.deepEqual(Object.keys(await storage.getJobs("indeed")), ["303"]);
     assert.equal(store[linkedin.cooldown].until > Date.now(), true);
@@ -81,7 +81,7 @@ Promise.resolve()
     assert.deepEqual(JSON.parse(JSON.stringify(store[indeed.diagnostics])), [{ at: fresh, event: "indeed-only" }]);
     assert.equal(store[indeed.flowLogging], true);
     assert.equal(store[indeed.runState].siteId, "indeed");
-    console.log("Site isolation tests passed: per-site state/logging/opened data are isolated and records expire after 30 days.");
+    console.log("Site isolation tests passed: per-site state/settings stay isolated and LinkedIn records persist beyond 30 days.");
   })
   .catch((error) => {
     console.error(error);

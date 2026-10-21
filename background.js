@@ -67,6 +67,7 @@ function defaultRunState() {
     currentPage: 0,
     searchUrl: null,
     capturedCount: 0,
+    runCapturedCount: 0,
     easyApplyCount: 0,
     companySiteCount: 0,
     resultsOpened: false,
@@ -451,8 +452,9 @@ async function openResultsForRun(state) {
       return;
     }
 
-    const resultsUrl = `${chrome.runtime.getURL("results.html")}?site=${SITE_ID}&runId=${encodeURIComponent(state.runId)}`;
+    const resultsUrl = chrome.runtime.getURL("results.html");
     await chrome.storage.local.set({
+      "ui.lastSite": SITE_ID,
       [STORAGE_KEYS.runState]: transitionRunState(current, current.state, {
         resultsOpening: true
       })
@@ -460,11 +462,13 @@ async function openResultsForRun(state) {
 
     try {
       const tabs = await chrome.tabs.query({});
-      let resultsTab = tabs.find((tab) => tab.url === resultsUrl);
+      let resultsTab = tabs.find((tab) => (
+        typeof tab.url === "string" && tab.url.startsWith(resultsUrl)
+      ));
       if (!resultsTab) {
         resultsTab = await chrome.tabs.create({ url: resultsUrl, active: true });
       } else if (Number.isInteger(resultsTab.id)) {
-        await chrome.tabs.update(resultsTab.id, { active: true });
+        await chrome.tabs.update(resultsTab.id, { url: resultsUrl, active: true });
       }
 
       const latest = await readRunState();
@@ -587,7 +591,8 @@ function initializeStorage() {
         initialValues[STORAGE_KEYS.openedJobs] = {};
       }
       if (
-        values[STORAGE_KEYS.selectedTab] !== "Easy Apply"
+        values[STORAGE_KEYS.selectedTab] !== "All"
+        && values[STORAGE_KEYS.selectedTab] !== "Easy Apply"
         && values[STORAGE_KEYS.selectedTab] !== "Company Site"
       ) {
         initialValues[STORAGE_KEYS.selectedTab] = "Easy Apply";
@@ -704,6 +709,7 @@ async function startRun(siteId = SITE_ID) {
     currentPage: 1,
     searchUrl: getSearchUrl(tab.url),
     capturedCount: 0,
+    runCapturedCount: 0,
     easyApplyCount: 0,
     companySiteCount: 0,
     resultsOpened: false,
@@ -716,9 +722,8 @@ async function startRun(siteId = SITE_ID) {
     startedAt: new Date().toISOString(),
     lastActionAt: new Date().toISOString()
   });
-  await writeJobs({}, {
+  await writeJobs(await readJobs(), {
     [STORAGE_KEYS.budget]: nextBudget,
-    [STORAGE_KEYS.openedJobs]: {},
     [STORAGE_KEYS.diagnostics]: [],
     [STORAGE_KEYS.runState]: running,
     [STORAGE_KEYS.progress]: {
@@ -846,8 +851,11 @@ async function saveCapturedJob(message) {
     if (budget.seenJobIds.includes(record.jobId)) {
       return { ok: true, saved: false, duplicateToday: true, stats: jobStats(jobsById) };
     }
+    const runCapturedCount = Number.isInteger(current.runCapturedCount)
+      ? current.runCapturedCount
+      : 0;
     if (
-      current.capturedCount >= globalThis.JobCollectorConfig.maxJobsPerRun
+      runCapturedCount >= globalThis.JobCollectorConfig.maxJobsPerRun
       || budget.jobsToday >= globalThis.JobCollectorConfig.maxJobsPerDay
     ) {
       const capped = transitionRunState(current, "DONE", {
@@ -871,23 +879,32 @@ async function saveCapturedJob(message) {
       };
     }
 
-    const nextJobs = { ...jobsById, [record.jobId]: record };
+    const nextJobs = {
+      ...jobsById,
+      [record.jobId]: {
+        ...record,
+        lastSeenAt: record.capturedAt || new Date().toISOString()
+      }
+    };
     const stats = jobStats(nextJobs);
     const nextBudget = {
       ...budget,
       jobsToday: budget.jobsToday + 1,
       seenJobIds: budget.seenJobIds.concat(record.jobId)
     };
-    const reachedLimit = stats.capturedCount >= globalThis.JobCollectorConfig.maxJobsPerRun
+    const nextRunCapturedCount = runCapturedCount + 1;
+    const reachedLimit = nextRunCapturedCount >= globalThis.JobCollectorConfig.maxJobsPerRun
       || nextBudget.jobsToday >= globalThis.JobCollectorConfig.maxJobsPerDay;
     let nextState = transitionRunState(current, current.state, {
       ...stats,
+      runCapturedCount: nextRunCapturedCount,
       currentPage: record.pageNumber,
       pageNumber: record.pageNumber
     });
     if (reachedLimit) {
       nextState = transitionRunState(current, "DONE", {
         ...stats,
+        runCapturedCount: nextRunCapturedCount,
         currentPage: record.pageNumber,
         pageNumber: record.pageNumber,
         terminalReason: "limit",
@@ -904,6 +921,40 @@ async function saveCapturedJob(message) {
       await openResultsForRun(nextState);
     }
     return { ok: true, saved: true, limitReached: reachedLimit, stats };
+  }));
+  captureQueue = operation.catch(() => {});
+  return operation;
+}
+
+async function touchSeenJobs(message) {
+  const jobIds = message.jobIds;
+  if (
+    !Array.isArray(jobIds)
+    || jobIds.length > globalThis.JobCollectorConfig.maxJobsPerDay
+    || jobIds.some((jobId) => typeof jobId !== "string" || !/^\d+$/.test(jobId))
+  ) {
+    throw new Error("The seen-job ID list is invalid.");
+  }
+  const operation = captureQueue.then(() => enqueueTerminalOperation(async () => {
+    const current = await readRunState();
+    if (!ACTIVE_STATES.has(current.state) || current.state === "PAUSED" || current.runId !== message.runId) {
+      throw new Error("Seen jobs are not associated with the active run.");
+    }
+    const jobsById = await readJobs();
+    const lastSeenAt = new Date().toISOString();
+    const nextJobs = { ...jobsById };
+    let touchedCount = 0;
+    for (const jobId of new Set(jobIds)) {
+      const record = nextJobs[jobId];
+      if (record && record.lastSeenAt !== lastSeenAt) {
+        nextJobs[jobId] = { ...record, lastSeenAt };
+        touchedCount += 1;
+      }
+    }
+    if (touchedCount > 0) {
+      await writeJobs(nextJobs);
+    }
+    return { ok: true, touchedCount };
   }));
   captureQueue = operation.catch(() => {});
   return operation;
@@ -985,6 +1036,8 @@ async function handleMessage(message, sender) {
       return handleStop(message.siteId || SITE_ID);
     case "SAVE_CAPTURE":
       return saveCapturedJob(message);
+    case "TOUCH_SEEN_JOBS":
+      return touchSeenJobs(message);
     case "DIAGNOSTIC_EVENT":
       await appendDiagnostic(message.runId, message.event, message.details);
       return { ok: true };
@@ -1079,9 +1132,9 @@ async function applyContentProgress(progress) {
   for (const field of countFields) {
     const maximum = field === "currentPage"
       ? globalThis.JobCollectorConfig.maxPages
-      : globalThis.JobCollectorConfig.maxJobsPerRun;
+      : Number.MAX_SAFE_INTEGER;
     if (
-      !Number.isInteger(progress[field])
+      !Number.isSafeInteger(progress[field])
       || progress[field] < 0
       || progress[field] > maximum
     ) {
