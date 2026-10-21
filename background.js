@@ -3,6 +3,7 @@
 importScripts(
   "config.js",
   "src/core/storage.js",
+  "src/core/native-backup.js",
   "src/core/run-guard.js",
   "src/core/messages.js",
   "src/sites/linkedin/migration.js",
@@ -50,9 +51,12 @@ const CONTENT_FILES = [
   "src/sites/linkedin/collector.js"
 ];
 let initializationPromise;
+let archiveRestorePromise;
+let storageInitialized = false;
 let progressQueue = Promise.resolve();
 let diagnosticQueue = Promise.resolve();
 let terminalQueue = Promise.resolve();
+let durableSettingsQueue = Promise.resolve();
 let startInProgress = false;
 const resultsOpenPromises = new Map();
 let captureQueue = Promise.resolve();
@@ -566,6 +570,19 @@ function initializeStorage() {
   if (!initializationPromise) {
     initializationPromise = (async () => {
       await globalThis.JobCollectorLinkedInMigration.run();
+      if (!globalThis.JobCollectorNativeBackup) {
+        throw new Error("The local job-history backup module is not loaded.");
+      }
+      if (!archiveRestorePromise) {
+        archiveRestorePromise = globalThis.JobCollectorNativeBackup.restoreArchive();
+      }
+      try {
+        await archiveRestorePromise;
+      } catch (error) {
+        archiveRestorePromise = null;
+        throw error;
+      }
+
       const values = await chrome.storage.local.get([
         STORAGE_KEYS.config,
         STORAGE_KEYS.runState,
@@ -612,6 +629,7 @@ function initializeStorage() {
       if (Object.keys(initialValues).length > 0) {
         await chrome.storage.local.set(initialValues);
       }
+      storageInitialized = true;
     })().catch((error) => {
       initializationPromise = null;
       throw error;
@@ -1248,17 +1266,37 @@ async function applyContentProgress(progress) {
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || !changes[STORAGE_KEYS.progress]) {
+  if (areaName !== "local") {
     return;
   }
 
-  const progress = changes[STORAGE_KEYS.progress].newValue;
-  progressQueue = progressQueue
-    .then(() => applyContentProgress(progress))
-    .catch((error) => {
-      debugLog("Could not persist content progress", errorMessage(error));
-      return persistRunFailure(error);
-    });
+  if (storageInitialized && globalThis.JobCollectorNativeBackup) {
+    const changedSettings = Object.entries(changes)
+      .filter(([key]) => globalThis.JobCollectorNativeBackup.isBackupSettingKey(key));
+    if (changedSettings.length > 0) {
+      durableSettingsQueue = durableSettingsQueue
+        .then(async () => {
+          for (const [key, change] of changedSettings) {
+            if (Object.prototype.hasOwnProperty.call(change, "newValue")) {
+              await globalThis.JobCollectorNativeBackup.upsertSetting(key, change.newValue);
+            }
+          }
+        })
+        .catch((error) => {
+          console.error("Could not archive durable job-collector settings.", error);
+        });
+    }
+  }
+
+  if (changes[STORAGE_KEYS.progress]) {
+    const progress = changes[STORAGE_KEYS.progress].newValue;
+    progressQueue = progressQueue
+      .then(() => applyContentProgress(progress))
+      .catch((error) => {
+        debugLog("Could not persist content progress", errorMessage(error));
+        return persistRunFailure(error);
+      });
+  }
 });
 
 async function failRunForTab(tabId, reason, { circuitBreaker = false } = {}) {
@@ -1386,7 +1424,7 @@ chrome.runtime.onInstalled.addListener(() => {
     await globalThis.JobCollectorIndeedBackground.recoverStaleRun();
     return recoverResultsOpening();
   }).catch((error) => {
-    debugLog("Storage initialization failed", errorMessage(error));
+    console.error("[Job Extensions] Storage/archive initialization failed", error);
   });
 });
 
@@ -1397,7 +1435,7 @@ chrome.runtime.onStartup.addListener(() => {
     await globalThis.JobCollectorIndeedBackground.recoverStaleRun();
     return recoverResultsOpening();
   }).catch((error) => {
-    debugLog("Storage initialization failed", errorMessage(error));
+    console.error("[Job Extensions] Storage/archive initialization failed", error);
   });
 });
 
@@ -1407,5 +1445,5 @@ void initializeStorage().then(async () => {
   await globalThis.JobCollectorIndeedBackground.recoverStaleRun();
   return recoverResultsOpening();
 }).catch((error) => {
-  debugLog("Storage initialization failed", errorMessage(error));
+  console.error("[Job Extensions] Storage/archive initialization failed", error);
 });

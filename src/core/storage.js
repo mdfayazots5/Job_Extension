@@ -2,7 +2,7 @@
 
 (function initializeJobCollectorStorage(global) {
   const RECORDS_KEY = "records";
-  const RECORD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+  const SITE_IDS = Object.freeze(["linkedin", "naukri", "indeed"]);
 
   function keysForSite(siteId) {
     if (typeof siteId !== "string" || !/^[a-z0-9-]+$/.test(siteId)) {
@@ -39,12 +39,18 @@
     );
   }
 
-  async function setJobs(siteId, jobsById, additionalValues = {}) {
+  async function setJobs(siteId, jobsById, additionalValues = {}, options = {}) {
+    if (!SITE_IDS.includes(siteId)) {
+      throw new Error("Job records require a supported site ID.");
+    }
     if (!jobsById || typeof jobsById !== "object" || Array.isArray(jobsById)) {
       throw new Error("Job records must be supplied as an ID-keyed object.");
     }
     if (!additionalValues || typeof additionalValues !== "object" || Array.isArray(additionalValues)) {
       throw new Error("Additional site storage values must be supplied as an object.");
+    }
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new Error("Storage write options must be an object.");
     }
     const siteKeys = keysForSite(siteId);
     const values = await chrome.storage.local.get([RECORDS_KEY, siteKeys.openedJobs]);
@@ -56,16 +62,15 @@
     const next = Object.fromEntries(
       Object.entries(current).filter(([key]) => !key.startsWith(prefix))
     );
-    const cutoff = siteId === "linkedin"
-      ? null
-      : Date.now() - RECORD_RETENTION_MS;
     for (const [jobId, record] of Object.entries(jobsById)) {
-      const capturedAt = Date.parse(record && record.capturedAt);
-      if (cutoff !== null && Number.isFinite(capturedAt) && capturedAt < cutoff) {
-        continue;
+      if (!jobId || !record || typeof record !== "object" || Array.isArray(record)) {
+        throw new Error(`Job record "${jobId}" is invalid.`);
       }
       next[`${prefix}${jobId}`] = record;
     }
+    const changedRecords = Object.entries(jobsById)
+      .filter(([jobId, record]) => JSON.stringify(current[`${prefix}${jobId}`]) !== JSON.stringify(record))
+      .map(([jobId, record]) => ({ siteId, record }));
     const opened = Object.prototype.hasOwnProperty.call(additionalValues, siteKeys.openedJobs)
       ? additionalValues[siteKeys.openedJobs]
       : values[siteKeys.openedJobs];
@@ -84,11 +89,18 @@
       [siteKeys.openedJobs]: prunedOpened,
       [RECORDS_KEY]: next
     });
+    if (options.backup !== false && global.JobCollectorNativeBackup) {
+      for (const item of changedRecords) {
+        await global.JobCollectorNativeBackup.upsertRecord(item.siteId, item.record);
+      }
+    }
   }
 
   global.JobCollectorStorage = Object.freeze({
     keysForSite,
     getJobs,
-    setJobs
+    setJobs,
+    recordKey: RECORDS_KEY,
+    siteIds: SITE_IDS
   });
 })(globalThis);

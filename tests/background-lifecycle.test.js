@@ -21,6 +21,7 @@ function eventHook() {
 
 async function run() {
   const store = {};
+  const archivedSettings = new Map();
   const getLinkedInJobs = () => Object.fromEntries(
     Object.entries(store.records || {})
       .filter(([key]) => key.startsWith("linkedin:"))
@@ -74,6 +75,21 @@ async function run() {
   const chrome = {
     runtime: {
       id: "collector-test",
+      async sendNativeMessage(_host, message) {
+        if (message.type === "list") {
+          return { ok: true, records: [], nextOffset: null };
+        }
+        if (message.type === "listSettings") {
+          return {
+            ok: true,
+            settings: [...archivedSettings.entries()].map(([key, value]) => ({ key, value }))
+          };
+        }
+        if (message.type === "upsertSetting") {
+          archivedSettings.set(message.key, message.value);
+        }
+        return { ok: true, saved: true };
+      },
       onMessage: eventHook(),
       onInstalled: eventHook(),
       onStartup: eventHook(),
@@ -164,6 +180,18 @@ async function run() {
     filename: "background.js"
   });
   await vm.runInContext("initializeStorage()", context);
+  await chrome.storage.local.set({
+    "linkedin:skipTitles": ["Exact title"],
+    "ui.linkedin.filters": { locations: ["Hyderabad"], experienceYears: [] },
+    "hidden.linkedin": { "42": true }
+  });
+  await vm.runInContext("durableSettingsQueue", context);
+  assert.deepEqual(archivedSettings.get("linkedin:skipTitles"), ["Exact title"]);
+  assert.deepEqual(archivedSettings.get("ui.linkedin.filters"), {
+    locations: ["Hyderabad"],
+    experienceYears: []
+  });
+  assert.deepEqual(archivedSettings.get("hidden.linkedin"), { "42": true });
   assert.equal(vm.runInContext("JobCollectorConfig.maxJobsPerRun", context), 500);
   assert.equal(vm.runInContext("JobCollectorConfig.maxJobsPerDay", context), 2000);
   assert.equal(vm.runInContext("JobCollectorConfig.maxRunsPerDay", context), undefined);

@@ -1665,7 +1665,7 @@ async function run() {
   assert.doesNotMatch(popupHtml, /copy-diagnostics|Copy flow log/i);
   assert.doesNotMatch(popupHtml, /Enable flow logs|Disable flow logs|flow-logging|flow-log-details/i);
   assert.doesNotMatch(fs.readFileSync("popup.js", "utf8"), /toggleFlowLogging|NAUKRI_SET_FLOW_LOGGING/);
-  assert.deepEqual(manifest.permissions, ["storage", "scripting", "tabs", "alarms"]);
+  assert.deepEqual(manifest.permissions, ["storage", "scripting", "tabs", "alarms", "nativeMessaging"]);
 }
 
 run().then(() => {

@@ -68,7 +68,7 @@ Promise.resolve()
   .then(async () => {
     assert.deepEqual(Object.keys(await storage.getJobs("linkedin")), ["101", "old"]);
     assert.deepEqual(Object.keys(await storage.getJobs("naukri")), ["202"]);
-    assert.deepEqual(Object.keys(await storage.getJobs("indeed")), ["303"]);
+    assert.deepEqual(Object.keys(await storage.getJobs("indeed")), ["303", "old"]);
     assert.equal(store[linkedin.cooldown].until > Date.now(), true);
     assert.equal(store[naukri.cooldown].until, 0);
     assert.equal(store[indeed.cooldown].until, 0);
@@ -77,11 +77,11 @@ Promise.resolve()
     assert.deepEqual(store[indeed.killSwitch], { triggerCount: 2 });
     assert.deepEqual(JSON.parse(JSON.stringify(store[linkedin.openedJobs])), { "101": true });
     assert.deepEqual(JSON.parse(JSON.stringify(store[naukri.openedJobs])), { "202": true });
-    assert.deepEqual(JSON.parse(JSON.stringify(store[indeed.openedJobs])), { "303": true });
+    assert.deepEqual(JSON.parse(JSON.stringify(store[indeed.openedJobs])), { "303": true, old: true });
     assert.deepEqual(JSON.parse(JSON.stringify(store[indeed.diagnostics])), [{ at: fresh, event: "indeed-only" }]);
     assert.equal(store[indeed.flowLogging], true);
     assert.equal(store[indeed.runState].siteId, "indeed");
-    console.log("Site isolation tests passed: per-site state/settings stay isolated and LinkedIn records persist beyond 30 days.");
+    console.log("Site isolation tests passed: per-site state/settings stay isolated and all site records are retained.");
   })
   .catch((error) => {
     console.error(error);

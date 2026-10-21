@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
 assert.equal(manifest.name, "Job Extensions");
 assert.equal(manifest.action.default_title, "Job Extensions");
-assert.deepEqual(manifest.permissions.sort(), ["alarms", "scripting", "storage", "tabs"]);
+assert.deepEqual(manifest.permissions.sort(), ["alarms", "nativeMessaging", "scripting", "storage", "tabs"]);
 assert.deepEqual(manifest.host_permissions.sort(), ["https://in.indeed.com/*", "https://www.linkedin.com/*", "https://www.naukri.com/*"]);
 assert.equal(manifest.content_scripts.length, 5);
 
