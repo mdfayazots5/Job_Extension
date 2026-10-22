@@ -705,13 +705,7 @@
         if (typeof message.enabled !== "boolean") {
           throw new Error("Naukri flow logging must be enabled or disabled explicitly.");
         }
-        if (!message.enabled) {
-          await appendFlowDiagnostic(null, "flow-logging-disabled");
-        }
         await chrome.storage.local.set({ [keys.flowLogging]: message.enabled });
-        if (message.enabled) {
-          await appendFlowDiagnostic(null, "flow-logging-enabled");
-        }
         return { ok: true, enabled: message.enabled };
       }
       case "NAUKRI_FLOW_LOG": {

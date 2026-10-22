@@ -265,6 +265,64 @@
     return { ok: true };
   }
 
+  async function saveFlowLog(message, sender) {
+    const current = await getState();
+    const { event, details } = message;
+    const logging = await chrome.storage.local.get("debug.indeed");
+    if (logging["debug.indeed"] !== true) {
+      return { ok: true, skipped: true };
+    }
+    if (
+      current.siteId !== siteId
+      || !ACTIVE_STATES.has(current.state)
+      || current.runId !== message.runId
+      || !sender.tab
+      || sender.tab.id !== current.tabId
+      || typeof event !== "string"
+      || !/^[a-z0-9-]{1,60}$/.test(event)
+      || !details
+      || typeof details !== "object"
+      || Array.isArray(details)
+    ) {
+      throw new Error("Indeed flow log does not match the active tab and run.");
+    }
+    const safeDetails = {};
+    for (const [key, value] of Object.entries(details)) {
+      if (
+        ["pageNumber", "recordCount"].includes(key)
+        && Number.isInteger(value)
+        && value >= 0
+      ) {
+        safeDetails[key] = value;
+      } else if (
+        key === "reason"
+        && ["block-detected", "collector-error"].includes(value)
+      ) {
+        safeDetails[key] = value;
+      }
+    }
+    const values = await chrome.storage.local.get(keys.diagnostics);
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const previous = Array.isArray(values[keys.diagnostics])
+      ? values[keys.diagnostics].filter((entry) => (
+        entry
+        && Number.isFinite(Date.parse(entry.at))
+        && Date.parse(entry.at) >= cutoff
+      ))
+      : [];
+    await chrome.storage.local.set({
+      [keys.diagnostics]: previous.concat({
+        at: new Date().toISOString(),
+        runId: current.runId,
+        siteId,
+        event,
+        details: safeDetails,
+        flow: true
+      }).slice(-1000)
+    });
+    return { ok: true };
+  }
+
   async function openResults(state) {
     if (!state || state.resultsOpened || state.capturedCount < 1) {
       return;
@@ -743,6 +801,8 @@
         return saveCapture(message, sender);
       case "INDEED_PAGE_DIAGNOSTICS":
         return savePageDiagnostics(message, sender);
+      case "INDEED_FLOW_LOG":
+        return saveFlowLog(message, sender);
       case "INDEED_SKIP_CAPTURE":
         return skipCapture(message, sender);
       case "INDEED_PREPARE_NAVIGATION":

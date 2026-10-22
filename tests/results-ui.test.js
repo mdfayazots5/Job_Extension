@@ -144,6 +144,17 @@ function createPage(storage, search = "") {
     "history-button",
     "export-button",
     "skip-titles-button",
+    "view-logs-button",
+    "flow-logging-toggle",
+    "flow-logging-label",
+    "logs-dialog",
+    "logs-heading",
+    "logs-summary",
+    "logs-close",
+    "logs-error",
+    "logs-content",
+    "copy-logs-button",
+    "logs-copy-status",
     "history-dialog",
     "history-close",
     "history-from",
@@ -207,6 +218,7 @@ function createPage(storage, search = "") {
   const elements = new Map(ids.map((id) => [id, new FakeElement("div", id)]));
   const storageListeners = [];
   const downloadedFiles = [];
+  const clipboardWrites = [];
   const blobsByUrl = new Map();
   const history = {
     replaceState(_state, _title, href) { this.replacedHref = href; }
@@ -290,6 +302,11 @@ function createPage(storage, search = "") {
       assign(href) { this.assignedHref = href; }
     },
     history,
+    navigator: {
+      clipboard: {
+        async writeText(value) { clipboardWrites.push(value); }
+      }
+    },
     setTimeout() { return 1; },
     Intl,
     Date,
@@ -327,9 +344,16 @@ function createPage(storage, search = "") {
     location: context.location,
     history,
     downloadedFiles,
+    clipboardWrites,
     blobsByUrl,
     updateStorage(key, value) {
       return chrome.storage.local.set({ [key]: value });
+    },
+    refreshPostedAges(now) {
+      return vm.runInContext(`refreshPostedAges(${now})`, context);
+    },
+    countFreshPostedRecords(now) {
+      return vm.runInContext(`countFreshPostedRecords(getRecords(), ${now})`, context);
     }
   };
 }
@@ -668,6 +692,116 @@ async function run() {
   assert.deepEqual(naukriPostedTitles(), ["Two Days Old", "Four Days Old", "One Week Old"]);
   await naukriPostedSortPage.elements.get("posted-sort").dispatch("click");
   assert.deepEqual(naukriPostedTitles(), ["One Week Old", "Four Days Old", "Two Days Old"]);
+
+  const linkedinPostedSortPage = createPage({
+    records: {
+      "linkedin:8101": job("8101", "Easy Apply", {
+        title: "Legacy One Year Old",
+        postedType: "Unknown",
+        postedText: "1 year ago · Over 100 people clicked apply",
+        postedDateEstimate: null,
+        capturedAt: "2026-10-22T10:00:00.000Z"
+      }),
+      "linkedin:8102": job("8102", "Easy Apply", {
+        title: "Recent Repost",
+        postedType: "Reposted",
+        postedText: "15 hours ago",
+        postedDateEstimate: "2026-10-21",
+        capturedAt: "2026-10-22T10:00:00.000Z"
+      }),
+      "linkedin:8103": job("8103", "Easy Apply", {
+        title: "One Hour Ago",
+        postedType: "Reposted",
+        postedText: "1 hour ago",
+        postedDateEstimate: "2026-10-22",
+        capturedAt: "2026-10-22T10:00:00.000Z"
+      }),
+      "linkedin:8104": job("8104", "Easy Apply", {
+        title: "Twenty Two Hours Ago",
+        postedType: "Reposted",
+        postedText: "22 hours ago",
+        postedDateEstimate: "2026-10-21",
+        capturedAt: "2026-10-22T10:00:00.000Z"
+      }),
+      "linkedin:8106": job("8106", "Easy Apply", {
+        title: "Seven Minutes Ago",
+        postedText: "7 minutes ago · Over 100 people clicked apply",
+        postedDateEstimate: "2026-10-21",
+        capturedAt: "2026-10-22T10:00:00.000Z"
+      }),
+      "linkedin:8107": job("8107", "Easy Apply", {
+        title: "Six Hours Ago",
+        postedText: "6 hours ago",
+        postedDateEstimate: "2026-10-22",
+        capturedAt: "2026-10-22T10:00:00.000Z"
+      }),
+      "linkedin:8105": job("8105", "Easy Apply", {
+        title: "Unknown Posting Date",
+        postedType: "Unknown",
+        postedText: "",
+        postedDateEstimate: null,
+        capturedAt: "2026-10-22T10:00:00.000Z"
+      })
+    },
+    "ui.lastSite": "linkedin",
+    "ui.linkedin.selectedTab": "All"
+  }, "?site=linkedin");
+  await settle();
+  const linkedinPostedRows = () => linkedinPostedSortPage.elements
+    .get("job-table-body")
+    .children;
+  const linkedinPostedTitles = () => linkedinPostedRows()
+    .map((row) => findAll(row, (item) => item.className === "role-title")[0].textContent);
+  assert.deepEqual(linkedinPostedTitles(), [
+    "Seven Minutes Ago",
+    "One Hour Ago",
+    "Six Hours Ago",
+    "Recent Repost",
+    "Twenty Two Hours Ago",
+    "Legacy One Year Old",
+    "Unknown Posting Date"
+  ]);
+  assert.equal(
+    findAll(linkedinPostedRows()[5], (item) => item.className === "posted-relative")[0].textContent,
+    "1 year ago"
+  );
+  linkedinPostedSortPage.refreshPostedAges(Date.parse("2026-10-22T12:00:00.000Z"));
+  assert.equal(
+    linkedinPostedSortPage.elements.get("summary-fresh").textContent,
+    "4"
+  );
+  assert.equal(
+    findAll(linkedinPostedRows()[3], (item) => item.className === "posted-relative")[0].textContent,
+    "17 hours ago"
+  );
+
+  const naukriDynamicAgePage = createPage({
+    records: {
+      "naukri:8201": {
+        ...naukriPrimary,
+        jobId: "8201",
+        title: "Naukri Dynamic Age",
+        postedText: "1 hour ago",
+        postedDateEstimate: "2026-10-22T09:00:00.000Z",
+        capturedAt: "2026-10-22T10:00:00.000Z"
+      }
+    },
+    "ui.lastSite": "naukri",
+    "ui.naukri.selectedTab": "All"
+  }, "?site=naukri");
+  await settle();
+  naukriDynamicAgePage.refreshPostedAges(Date.parse("2026-10-22T12:30:00.000Z"));
+  assert.equal(
+    findAll(
+      naukriDynamicAgePage.elements.get("job-table-body").children[0],
+      (item) => item.className === "posted-relative"
+    )[0].textContent,
+    "3 hours ago"
+  );
+  assert.equal(
+    naukriDynamicAgePage.elements.get("summary-fresh").textContent,
+    "1"
+  );
 
   naukriPage.elements.get("filter-location-bengaluru").checked = true;
   await naukriPage.elements.get("filter-location-bengaluru").dispatch("change");
@@ -1116,12 +1250,31 @@ async function run() {
   assert.equal(indeedPage.elements.get("skip-titles-button").hidden, false);
   const skipTitlePage = createPage({
     records: {},
-    "indeed:skipTitles": ["Senior Software Engineer"]
+    "indeed:skipTitles": ["Senior Software Engineer"],
+    "diagnostics.indeed": [{ event: "page-start", pageNumber: 1 }]
   }, "?site=indeed");
   await settle();
   await skipTitlePage.elements.get("settings-button").dispatch("click");
   assert.equal(skipTitlePage.elements.get("settings-menu").hidden, false);
   assert.equal(skipTitlePage.elements.get("settings-button").getAttribute("aria-expanded"), "true");
+  await skipTitlePage.elements.get("view-logs-button").dispatch("click");
+  await settle();
+  assert.equal(skipTitlePage.elements.get("settings-menu").hidden, true);
+  assert.equal(skipTitlePage.elements.get("logs-dialog").open, true);
+  assert.match(skipTitlePage.elements.get("logs-heading").textContent, /Indeed flow logs/);
+  assert.match(skipTitlePage.elements.get("logs-content").value, /page-start/);
+  await skipTitlePage.elements.get("copy-logs-button").dispatch("click");
+  await settle();
+  assert.match(skipTitlePage.clipboardWrites[0], /page-start/);
+  assert.equal(skipTitlePage.elements.get("logs-copy-status").textContent, "Logs copied.");
+  await skipTitlePage.updateStorage("diagnostics.indeed", [
+    { event: "page-start", pageNumber: 1 },
+    { event: "run-finished", pageNumber: 1 }
+  ]);
+  assert.match(skipTitlePage.elements.get("logs-content").value, /run-finished/);
+  await skipTitlePage.elements.get("logs-close").dispatch("click");
+  assert.equal(skipTitlePage.elements.get("logs-dialog").open, false);
+  await skipTitlePage.elements.get("settings-button").dispatch("click");
   await skipTitlePage.elements.get("skip-titles-button").dispatch("click");
   assert.equal(skipTitlePage.elements.get("settings-menu").hidden, true);
   assert.equal(skipTitlePage.elements.get("skip-title-dialog").open, true);
@@ -1154,12 +1307,38 @@ async function run() {
   );
   await skipTitlePage.elements.get("skip-title-close").dispatch("click");
   assert.equal(skipTitlePage.elements.get("skip-title-dialog").open, false);
-  for (const [siteId, siteLabel] of [["linkedin", "LinkedIn"], ["naukri", "Naukri"]]) {
+  for (const [siteId, siteLabel] of [
+    ["linkedin", "LinkedIn"],
+    ["naukri", "Naukri"],
+    ["indeed", "Indeed"]
+  ]) {
     const platformSettingsPage = createPage({
-      [`${siteId}:skipTitles`]: ["Existing exact title"]
+      [`${siteId}:skipTitles`]: ["Existing exact title"],
+      [`diagnostics.${siteId}`]: [{ event: "previous-run", flow: true }],
+      [`debug.${siteId}`]: true
     }, `?site=${siteId}`);
     await settle();
     assert.equal(platformSettingsPage.elements.get("skip-titles-button").hidden, false);
+    assert.equal(platformSettingsPage.elements.get("flow-logging-label").textContent, `Flow logs (${siteLabel})`);
+    assert.equal(platformSettingsPage.elements.get("flow-logging-toggle").checked, true);
+    platformSettingsPage.elements.get("flow-logging-toggle").checked = false;
+    await platformSettingsPage.elements.get("flow-logging-toggle").dispatch("change");
+    await settle();
+    assert.equal(platformSettingsPage.storage[`debug.${siteId}`], false, `${siteId} flow logging toggle was not persisted`);
+    assert.equal(platformSettingsPage.storage[`diagnostics.${siteId}`].length, 1);
+    platformSettingsPage.elements.get("flow-logging-toggle").checked = true;
+    await platformSettingsPage.elements.get("flow-logging-toggle").dispatch("change");
+    await settle();
+    assert.equal(platformSettingsPage.storage[`debug.${siteId}`], true, `${siteId} flow logging was not enabled`);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(platformSettingsPage.storage[`diagnostics.${siteId}`])),
+      [],
+      `${siteId} diagnostics were not cleared when flow logging was enabled`
+    );
+    await platformSettingsPage.elements.get("settings-button").dispatch("click");
+    await platformSettingsPage.elements.get("view-logs-button").dispatch("click");
+    await settle();
+    assert.equal(platformSettingsPage.elements.get("logs-content").value, "No logs yet.");
     await platformSettingsPage.elements.get("settings-button").dispatch("click");
     await platformSettingsPage.elements.get("skip-titles-button").dispatch("click");
     assert.equal(
@@ -1639,6 +1818,10 @@ async function run() {
   assert.match(resultsHtml, /id="history-button"[^>]*>History<\/button>/);
   assert.match(resultsHtml, /id="export-button"[^>]*>Export<\/button>/);
   assert.match(resultsHtml, /id="skip-titles-button"[^>]*>Skip Title<\/button>/);
+  assert.match(resultsHtml, /id="view-logs-button"[^>]*>View Logs<\/button>/);
+  assert.match(resultsHtml, /id="flow-logging-toggle" type="checkbox"/);
+  assert.match(resultsHtml, /id="logs-dialog"[^>]*>/);
+  assert.match(resultsHtml, /id="copy-logs-button"[^>]*>Copy logs<\/button>/);
   assert.match(resultsHtml, /id="skip-title-dialog"[^>]*>/);
   assert.match(resultsHtml, /id="skip-title-input"/);
   assert.match(resultsHtml, /id="skip-title-list"/);
@@ -1662,14 +1845,14 @@ async function run() {
   assert.doesNotMatch(resultsHtml, /id="indeed-skipped-footer"|id="dates-footer"/);
   assert.doesNotMatch(resultsHtml, /skipped-count|skipped \(no apply option\)/);
   assert.doesNotMatch(resultsHtml, /id="hide-(?:visited|sponsored)"/);
-  assert.doesNotMatch(popupHtml, /copy-diagnostics|Copy flow log/i);
-  assert.doesNotMatch(popupHtml, /Enable flow logs|Disable flow logs|flow-logging|flow-log-details/i);
-  assert.doesNotMatch(fs.readFileSync("popup.js", "utf8"), /toggleFlowLogging|NAUKRI_SET_FLOW_LOGGING/);
+  assert.doesNotMatch(popupHtml, /copy-diagnostics|Copy flow log|id="logs"/i);
+  assert.equal((popupHtml.match(/<button\b/g) || []).length, 3);
+  assert.match(fs.readFileSync("results.js", "utf8"), /flow-logging-toggle/);
   assert.deepEqual(manifest.permissions, ["storage", "scripting", "tabs", "alarms", "nativeMessaging"]);
 }
 
 run().then(() => {
-  console.log("Results UI tests passed: table behavior, safe standalone reports, terminal downloads, and popup controls.");
+  console.log("Results UI tests passed: platform settings, live View Logs, Copy logs, table behavior, and reports.");
 }).catch((error) => {
   console.error(error);
   process.exitCode = 1;

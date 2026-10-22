@@ -347,6 +347,29 @@ async function testIndeedBackground() {
     parseError: 0,
     notInResults: 0
   });
+  store["debug.indeed"] = true;
+  await background.handleMessage({
+    type: "INDEED_FLOW_LOG",
+    siteId: "indeed",
+    runId: state.runId,
+    event: "pagination-start",
+    details: { pageNumber: 2, searchUrl: "https://in.indeed.com/jobs?q=private", token: "private" }
+  }, tabSender);
+  assert.equal(store["diagnostics.indeed"].length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(store["diagnostics.indeed"][1].details)), {
+    pageNumber: 2
+  });
+  assert.equal(store["diagnostics.indeed"][1].flow, true);
+  store["debug.indeed"] = false;
+  const diagnosticCount = store["diagnostics.indeed"].length;
+  await background.handleMessage({
+    type: "INDEED_FLOW_LOG",
+    siteId: "indeed",
+    runId: state.runId,
+    event: "run-finished",
+    details: { pageNumber: 2 }
+  }, tabSender);
+  assert.equal(store["diagnostics.indeed"].length, diagnosticCount);
   const record = {
     siteId: "indeed",
     jobId: "0123456789abcdef",

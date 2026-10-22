@@ -7,6 +7,7 @@ internal static class Program
 {
     private const int MaximumMessageBytes = 16 * 1024 * 1024;
     private const int MaximumResponseBytes = 512 * 1024;
+    private const int MaximumFileLockAttempts = 7;
     private static readonly HashSet<string> SupportedSites = ["linkedin", "naukri", "indeed"];
     private static readonly HashSet<string> SupportedSettings = BuildSupportedSettings();
 
@@ -99,13 +100,7 @@ internal static class Program
             ["archivedAt"] = DateTimeOffset.UtcNow.ToString("O")
         };
         var bytes = Encoding.UTF8.GetBytes(entry.ToJsonString() + "\n");
-        await using var stream = new FileStream(
-            FindBackupPath(),
-            FileMode.Append,
-            FileAccess.Write,
-            FileShare.Read,
-            bufferSize: 4096,
-            FileOptions.WriteThrough);
+        await using var stream = await OpenAppendStreamWithRetryAsync(FindBackupPath());
         await stream.WriteAsync(bytes);
         stream.Flush(flushToDisk: true);
         return new JsonObject { ["ok"] = true, ["saved"] = true };
@@ -118,7 +113,7 @@ internal static class Program
         if (File.Exists(path))
         {
             var lineNumber = 0;
-            foreach (var line in await File.ReadAllLinesAsync(path, Encoding.UTF8))
+            foreach (var line in await ReadArchiveLinesWithRetryAsync(path))
             {
                 lineNumber++;
                 if (string.IsNullOrWhiteSpace(line))
@@ -199,13 +194,7 @@ internal static class Program
             ["archivedAt"] = DateTimeOffset.UtcNow.ToString("O")
         };
         var bytes = Encoding.UTF8.GetBytes(entry.ToJsonString() + "\n");
-        await using var stream = new FileStream(
-            backupPath,
-            FileMode.Append,
-            FileAccess.Write,
-            FileShare.Read,
-            bufferSize: 4096,
-            FileOptions.WriteThrough);
+        await using var stream = await OpenAppendStreamWithRetryAsync(backupPath);
         await stream.WriteAsync(bytes);
         stream.Flush(flushToDisk: true);
         return new JsonObject { ["ok"] = true, ["saved"] = true };
@@ -225,7 +214,7 @@ internal static class Program
         if (File.Exists(path))
         {
             var lineNumber = 0;
-            foreach (var line in await File.ReadAllLinesAsync(path, Encoding.UTF8))
+            foreach (var line in await ReadArchiveLinesWithRetryAsync(path))
             {
                 lineNumber++;
                 if (string.IsNullOrWhiteSpace(line))
@@ -309,6 +298,55 @@ internal static class Program
             ["nextOffset"] = end < ordered.Length ? end : null
         };
     }
+
+    private static async Task<FileStream> OpenAppendStreamWithRetryAsync(string path)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return new FileStream(
+                    path,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.Read,
+                    bufferSize: 4096,
+                    FileOptions.WriteThrough);
+            }
+            catch (IOException error) when (
+                IsSharingViolation(error)
+                && attempt < MaximumFileLockAttempts - 1)
+            {
+                await Task.Delay(FileLockRetryDelay(attempt));
+            }
+        }
+    }
+
+    private static async Task<string[]> ReadArchiveLinesWithRetryAsync(string path)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await File.ReadAllLinesAsync(path, Encoding.UTF8);
+            }
+            catch (IOException error) when (
+                IsSharingViolation(error)
+                && attempt < MaximumFileLockAttempts - 1)
+            {
+                await Task.Delay(FileLockRetryDelay(attempt));
+            }
+        }
+    }
+
+    private static bool IsSharingViolation(IOException error)
+    {
+        var win32Error = error.HResult & 0xFFFF;
+        return win32Error is 32 or 33;
+    }
+
+    private static TimeSpan FileLockRetryDelay(int attempt) =>
+        TimeSpan.FromMilliseconds(Math.Min(50 * (1 << attempt), 500));
 
     private static int ReadNonNegativeInteger(JsonNode? value, string name)
     {

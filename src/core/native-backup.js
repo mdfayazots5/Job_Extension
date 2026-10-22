@@ -19,8 +19,9 @@
   ]);
   const SETTINGS_KEY_SET = new Set(SETTINGS_KEYS);
   let restorePromise = null;
+  let nativeRequestQueue = Promise.resolve();
 
-  async function send(message) {
+  async function sendRequest(message) {
     if (!global.chrome || !global.chrome.runtime
       || typeof global.chrome.runtime.sendNativeMessage !== "function") {
       throw new Error("The local job-history backup host is unavailable.");
@@ -32,6 +33,12 @@
         : "The local job-history backup host did not acknowledge the request.");
     }
     return response;
+  }
+
+  function send(message) {
+    const operation = nativeRequestQueue.then(() => sendRequest(message));
+    nativeRequestQueue = operation.catch(() => {});
+    return operation;
   }
 
   function validateRecord(siteId, record) {

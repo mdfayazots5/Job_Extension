@@ -91,7 +91,14 @@
     });
     if (options.backup !== false && global.JobCollectorNativeBackup) {
       for (const item of changedRecords) {
-        await global.JobCollectorNativeBackup.upsertRecord(item.siteId, item.record);
+        try {
+          await global.JobCollectorNativeBackup.upsertRecord(item.siteId, item.record);
+        } catch (error) {
+          console.error(
+            "Could not archive a locally saved job record; it will be synchronized on the next extension startup.",
+            error
+          );
+        }
       }
     }
   }
