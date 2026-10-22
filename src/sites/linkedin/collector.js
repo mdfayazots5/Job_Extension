@@ -22,6 +22,7 @@
   let hiddenSince = null;
   let responseObserver = null;
   let blockingObserver = null;
+  let loggingEnabled = false;
   let unhandledExceptionCount = 0;
   let circuitTriggered = false;
   let activePageNumber = 1;
@@ -80,12 +81,20 @@
   }
 
   function debugLog(...values) {
-    if (config.debug) {
+    if (config.debug || loggingEnabled) {
       console.log("[LinkedIn Jobs Collector]", ...values);
     }
   }
 
+  async function refreshLoggingSetting() {
+    const values = await chrome.storage.local.get("debug.linkedin");
+    loggingEnabled = values["debug.linkedin"] === true;
+  }
+
   function writeDiagnostic(runId, event, details = {}) {
+    if (!loggingEnabled) {
+      return Promise.resolve();
+    }
     const write = diagnosticsWriteQueue.then(async () => {
       const response = await chrome.runtime.sendMessage({
         type: "DIAGNOSTIC_EVENT",
@@ -721,7 +730,7 @@
     }
 
     const title = (titleLink.innerText || titleLink.textContent || "").trim();
-    const company = (companyLink.innerText || companyLink.textContent || "").trim();
+    const company = selectors.getDetailCompanyName(detailPane, errors);
     if (!title) {
       throw new Error("The matching detail pane has an empty job title.");
     }
@@ -1386,6 +1395,7 @@
   }
 
   async function runPage(runId, savedState) {
+    await refreshLoggingSetting();
     activeRunId = runId;
     activeSearchUrl = normalizeSearchUrl(
       typeof savedState.searchUrl === "string"
@@ -1498,6 +1508,7 @@
           : (error instanceof CircuitBreakerError
             ? "consecutive-load-failures"
             : "collector-error"),
+        message: failureMessage,
         route: window.location.pathname
       });
       debugLog("Page collection failed", failureMessage);
@@ -1588,6 +1599,9 @@
   }
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local" && changes["debug.linkedin"]) {
+      loggingEnabled = changes["debug.linkedin"].newValue === true;
+    }
     if (areaName !== "local" || !changes[STORAGE_KEYS.runState] || !activeRunId) {
       return;
     }

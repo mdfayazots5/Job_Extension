@@ -198,6 +198,7 @@ async function testNaukriBackground() {
   assert.equal(loggingEnabled.enabled, true);
   assert.equal(store["debug.naukri"], true);
   assert.equal(store["debug.linkedin"], undefined);
+  assert.equal(store["diagnostics.naukri"], undefined);
 
   store["runs.linkedin"] = {
     state: "RUNNING",

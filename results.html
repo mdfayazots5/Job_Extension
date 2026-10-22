@@ -61,6 +61,11 @@
             <button id="history-button" class="settings-menu-item" type="button">History</button>
             <button id="export-button" class="settings-menu-item" type="button">Export</button>
             <button id="skip-titles-button" class="settings-menu-item" type="button" hidden>Skip Title</button>
+            <button id="view-logs-button" class="settings-menu-item" type="button">View Logs</button>
+            <label class="settings-menu-item settings-toggle" for="flow-logging-toggle">
+              <input id="flow-logging-toggle" type="checkbox">
+              <span id="flow-logging-label">Flow logs (LinkedIn)</span>
+            </label>
           </div>
         </div>
         <p id="run-subtitle" class="subtitle" hidden></p>
@@ -94,6 +99,22 @@
             </table>
           </div>
         </form>
+      </dialog>
+
+      <dialog id="logs-dialog" class="history-dialog logs-dialog" aria-labelledby="logs-heading">
+        <div class="history-header">
+          <div>
+            <h2 id="logs-heading">LinkedIn flow logs</h2>
+            <p id="logs-summary">Recent diagnostic entries for this platform.</p>
+          </div>
+          <button id="logs-close" class="icon-button" type="button" aria-label="Close logs">×</button>
+        </div>
+        <p id="logs-error" class="history-error" role="alert" hidden></p>
+        <textarea id="logs-content" class="logs-content" readonly aria-label="Diagnostic logs"></textarea>
+        <div class="logs-actions">
+          <button id="copy-logs-button" class="secondary-button" type="button">Copy logs</button>
+          <span id="logs-copy-status" role="status" aria-live="polite"></span>
+        </div>
       </dialog>
 
       <dialog id="skip-title-dialog" class="history-dialog skip-title-dialog" aria-labelledby="skip-title-heading">

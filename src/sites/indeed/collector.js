@@ -74,6 +74,23 @@
     return response;
   }
 
+  async function logFlow(runId, event, details = {}) {
+    try {
+      const settings = await chrome.storage.local.get("debug.indeed");
+      if (settings["debug.indeed"] !== true) {
+        return;
+      }
+      await send({
+        type: "INDEED_FLOW_LOG",
+        runId,
+        event,
+        details
+      });
+    } catch (error) {
+      console.warn("[Indeed Jobs Collector] Could not persist flow log", event, error);
+    }
+  }
+
   async function checkRunning(runId) {
     if (stopRequested || activeRunId !== runId) {
       throw new IndeedStopError();
@@ -165,6 +182,7 @@
 
   async function runPage(runId, runState) {
     const pageNumber = runState.pageNumber;
+    await logFlow(runId, "run-start", { pageNumber });
     const context = {
       doc: document,
       url: currentUrl(),
@@ -201,6 +219,10 @@
           counters: pageResult.diagnostics
         });
         const records = pageResult.records;
+        await logFlow(currentRunId, "page-parsed", {
+          pageNumber: currentPage,
+          recordCount: records.length
+        });
         if (!records.length) {
           throw new IndeedBlockError("Indeed returned 0 usable job records on a results page.");
         }
@@ -250,6 +272,7 @@
         return readStats(currentRunId);
       },
       async beforeNextPage(currentPage) {
+        await logFlow(runId, "page-complete", { pageNumber: currentPage });
         if (currentPage % config.microPauseEveryPages === 0) {
           await waitVisibleDelay(runId, randomDelay(config.microPauseMs));
         }
@@ -257,6 +280,7 @@
       },
       async prepareNavigation(nextPage) {
         await waitUntilVisible(runId);
+        await logFlow(runId, "pagination-start", { pageNumber: nextPage });
         await send({
           type: "INDEED_PREPARE_NAVIGATION",
           runId,
@@ -288,6 +312,7 @@
         });
       },
       async finish(currentPage, stats, message) {
+        await logFlow(runId, "run-finished", { pageNumber: currentPage });
         await send({
           type: "INDEED_RUN_FINISHED",
           runId,
@@ -305,6 +330,10 @@
       navigationPending = result.navigation === "navigated";
     } catch (error) {
       if (!(error instanceof IndeedStopError) && !(error instanceof IndeedLimitError)) {
+        await logFlow(runId, "run-failed", {
+          pageNumber,
+          reason: error instanceof IndeedBlockError ? "block-detected" : "collector-error"
+        });
         await reportFailure(runId, error);
       }
     } finally {

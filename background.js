@@ -290,6 +290,7 @@ function appendDiagnostic(runId, event, details = {}) {
       "jobId",
       "route",
       "reason",
+      "message",
       "beforeScrollTop",
       "requestedScrollAmount",
       "observerResult",
@@ -324,16 +325,22 @@ function appendDiagnostic(runId, event, details = {}) {
       "STOPPED",
       "ERROR",
       "stalled",
-      "stop-requested"
+      "stop-requested",
+      "pagination-timeout",
+      "detail-load-failure",
+      "missing-company-name"
     ]);
     const safeEvents = new Set([
       "run-start",
+      "run-paused",
+      "run-resumed",
       "run-paused",
       "run-resumed",
       "circuit-breaker",
       "job-captured",
       "job-already-captured",
       "job-already-applied",
+      "job-skipped-role",
       "job-card-click",
       "detail-loaded",
       "page-start",
@@ -361,6 +368,15 @@ function appendDiagnostic(runId, event, details = {}) {
       }
       if (key === "reason") {
         safeDetails[key] = safeReasons.has(value) ? value : "unspecified";
+        continue;
+      }
+      if (key === "message") {
+        if (typeof value === "string") {
+          safeDetails[key] = value
+            .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+            .replace(/\b(token|csrf|cookie|authorization)\b\s*[:=]\s*\S+/gi, "$1=[redacted]")
+            .slice(0, 240);
+        }
         continue;
       }
       if (key === "route") {

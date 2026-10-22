@@ -538,7 +538,24 @@
   }
 
   function getDetailCompanyLink(root, errors) {
-    return safeQuery(root, SELECTORS.companyLinks, "find detail company name", errors);
+    const links = safeQueryAll(root, SELECTORS.companyLinks, "find detail company name", errors);
+    return links.find((link) => safeQuery(
+      link,
+      SELECTORS.companyLogoImages,
+      "find company logo link in detail pane",
+      errors
+    )) || links[0] || null;
+  }
+
+  function getDetailCompanyName(root, errors) {
+    const links = safeQueryAll(root, SELECTORS.companyLinks, "find detail company name", errors);
+    for (const link of links) {
+      const name = (link.innerText || link.textContent || "").replace(/\s+/g, " ").trim();
+      if (name) {
+        return name;
+      }
+    }
+    return "";
   }
 
   function getDetailCompanyLogoUrl(companyLink, errors) {
@@ -1028,6 +1045,7 @@
     findDetailPaneForJob,
     getDetailTitleLink,
     getDetailCompanyLink,
+    getDetailCompanyName,
     getDetailCompanyLogoUrl,
     getListCardDetails,
     isActivelyReviewingApplicants,

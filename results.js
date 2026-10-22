@@ -27,6 +27,17 @@ const elements = {
   historyButton: document.getElementById("history-button"),
   exportButton: document.getElementById("export-button"),
   skipTitlesButton: document.getElementById("skip-titles-button"),
+  viewLogsButton: document.getElementById("view-logs-button"),
+  flowLoggingToggle: document.getElementById("flow-logging-toggle"),
+  flowLoggingLabel: document.getElementById("flow-logging-label"),
+  logsDialog: document.getElementById("logs-dialog"),
+  logsHeading: document.getElementById("logs-heading"),
+  logsSummary: document.getElementById("logs-summary"),
+  logsClose: document.getElementById("logs-close"),
+  logsError: document.getElementById("logs-error"),
+  logsContent: document.getElementById("logs-content"),
+  copyLogsButton: document.getElementById("copy-logs-button"),
+  logsCopyStatus: document.getElementById("logs-copy-status"),
   historyDialog: document.getElementById("history-dialog"),
   historyClose: document.getElementById("history-close"),
   historyFrom: document.getElementById("history-from"),
@@ -122,7 +133,8 @@ let storageSnapshot = {
   filterSettings: { locations: [], experienceYears: [], hideOpened: true, hideHiddenJobs: true },
   collectorState: null,
   resultsSelectedTab: null,
-  skipTitles: []
+  skipTitles: [],
+  flowLoggingEnabled: false
 };
 let selectedTab = APPLY_TABS[0];
 let showingHiddenJobs = false;
@@ -133,6 +145,7 @@ let openedWriteQueue = Promise.resolve();
 let hiddenWriteQueue = Promise.resolve();
 let filterWriteQueue = Promise.resolve();
 const selectedJobIds = new Set();
+const dynamicPostedLabels = new Map();
 let visibleJobIds = [];
 let sortState = { key: "posted", direction: "descending" };
 
@@ -180,6 +193,7 @@ function configureSite(siteId) {
     tab.id === "Company Apply" || tab.id === "Company Site"
   ));
   elements.skipTitlesButton.hidden = false;
+  elements.flowLoggingLabel.textContent = `Flow logs (${adapter.label})`;
   elements.skipTitleHeading.textContent = `Skip titles — ${adapter.label}`;
   closeSettingsMenu();
   elements.linkedinSite.setAttribute("aria-pressed", String(siteId === "linkedin"));
@@ -584,6 +598,175 @@ function getIndeedPostedTimestamp(record) {
     : null;
 }
 
+function getLinkedInPostedTimestamp(record) {
+  const relativeEstimate = globalThis.JobCollectorMetadata.estimatePostedTimestamp(
+    globalThis.JobCollectorMetadata.cleanPostedText(record.postedText),
+    record.capturedAt
+  );
+  const relativeTimestamp = Date.parse(String(relativeEstimate || ""));
+  if (Number.isFinite(relativeTimestamp)) {
+    return relativeTimestamp;
+  }
+  const storedEstimate = Date.parse(String(record.postedDateEstimate || ""));
+  if (Number.isFinite(storedEstimate)) {
+    return storedEstimate;
+  }
+  return null;
+}
+
+function formatRelativePostedAge(ageMilliseconds) {
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const week = 7 * day;
+  const month = 30 * day;
+  const year = 12 * month;
+  const units = [
+    ["year", year],
+    ["month", month],
+    ["week", week],
+    ["day", day],
+    ["hour", hour],
+    ["minute", minute]
+  ];
+  const [unit, duration] = units.find(([, size]) => ageMilliseconds >= size) || ["minute", minute];
+  const amount = Math.floor(ageMilliseconds / duration);
+  return amount < 1
+    ? "Just now"
+    : `${amount} ${unit}${amount === 1 ? "" : "s"} ago`;
+}
+
+function getLinkedInPostedAge(record) {
+  const text = globalThis.JobCollectorMetadata
+    .cleanPostedText(record.postedText)
+    .trim()
+    .toLowerCase();
+  if (/^(?:just now|just posted|today)$/.test(text)) {
+    return 0;
+  }
+  if (text === "yesterday") {
+    return 24 * 60 * 60 * 1000;
+  }
+  const match = text.match(/^(\d+)\+?\s*(minutes?|hours?|days?|weeks?|months?|years?)\s+ago$/);
+  if (!match) {
+    return null;
+  }
+  const unit = match[2].replace(/s$/, "");
+  const duration = {
+    minute: 60 * 1000,
+    hour: 60 * 60 * 1000,
+    day: 24 * 60 * 60 * 1000,
+    week: 7 * 24 * 60 * 60 * 1000,
+    month: 30 * 24 * 60 * 60 * 1000,
+    year: 365 * 24 * 60 * 60 * 1000
+  }[unit];
+  return Number(match[1]) * duration;
+}
+
+function getLinkedInPostedText(record, now = Date.now()) {
+  const cleanText = globalThis.JobCollectorMetadata.cleanPostedText(record.postedText);
+  const age = getLinkedInPostedAge(record);
+  const postedAt = age === null ? null : getLinkedInPostedTimestamp(record);
+  return postedAt === null
+    ? cleanText
+    : formatRelativePostedAge(Math.max(0, now - postedAt));
+}
+
+function getNaukriPostedTimestamp(record) {
+  const savedEstimate = Date.parse(String(record.postedDateEstimate || ""));
+  if (Number.isFinite(savedEstimate)) {
+    return savedEstimate;
+  }
+  const capturedAt = Date.parse(String(record.capturedAt || ""));
+  if (!Number.isFinite(capturedAt)) {
+    return null;
+  }
+  const text = String(record.postedText || "").trim().toLowerCase();
+  if (/^(?:just now|today)$/.test(text)) {
+    return capturedAt;
+  }
+  const age = getNaukriPostedAge(record);
+  if (age !== null) {
+    return capturedAt - age * 24 * 60 * 60 * 1000;
+  }
+  if (text === "few hours ago") {
+    return capturedAt - 3 * 60 * 60 * 1000;
+  }
+  return null;
+}
+
+function getNaukriPostedText(record, now = Date.now()) {
+  const text = String(record.postedText || "").trim();
+  if (
+    !/^(?:just now|few hours ago|today|\d+\+?\s+(?:hours?|days?|weeks?|months?)\s+ago)$/i.test(text)
+  ) {
+    return text;
+  }
+  const postedAt = getNaukriPostedTimestamp(record);
+  if (postedAt === null) {
+    return text;
+  }
+  const age = formatRelativePostedAge(Math.max(0, now - postedAt));
+  return text.includes("+")
+    ? age.replace(/^(\d+)\s+(.+)\s+ago$/, "$1+ $2 ago")
+    : age;
+}
+
+function getDisplayedPostedText(siteId, record, now = Date.now()) {
+  if (siteId === "linkedin") {
+    return getLinkedInPostedText(record, now);
+  }
+  if (siteId === "naukri") {
+    return getNaukriPostedText(record, now);
+  }
+  return record.postedText || "";
+}
+
+function refreshPostedAges(now = Date.now()) {
+  for (const { element, record } of dynamicPostedLabels.values()) {
+    element.textContent = getDisplayedPostedText(SITE_ID, record, now) || "Date not listed";
+  }
+  if (SITE_ID === "linkedin" || SITE_ID === "naukri") {
+    elements.summaryFresh.textContent = String(countFreshPostedRecords(getRecords(), now));
+  }
+}
+
+function getPostedTimestampForFreshCount(record, now) {
+  if (SITE_ID === "linkedin") {
+    return getLinkedInPostedTimestamp(record);
+  }
+  if (SITE_ID === "naukri") {
+    return getNaukriPostedTimestamp(record);
+  }
+  if (SITE_ID === "indeed") {
+    if (/^(?:just posted|today)$/i.test(String(record.postedText || "").trim())) {
+      return now;
+    }
+    return getIndeedPostedTimestamp(record);
+  }
+  return null;
+}
+
+function countFreshPostedRecords(records, now) {
+  return records.filter((record) => {
+    const postedAt = getPostedTimestampForFreshCount(record, now);
+    return postedAt !== null
+      && Number.isFinite(postedAt)
+      && postedAt <= now
+      && now - postedAt < 24 * 60 * 60 * 1000;
+  }).length;
+}
+
+function schedulePostedAgeRefresh() {
+  if (SITE_ID !== "linkedin" && SITE_ID !== "naukri") {
+    return;
+  }
+  globalThis.setTimeout(() => {
+    refreshPostedAges();
+    schedulePostedAgeRefresh();
+  }, 60 * 1000);
+}
+
 function getNaukriPostedAge(record) {
   const text = String(record.postedText || "").trim().toLowerCase();
   if (/^(?:just now|few hours ago|today)$/.test(text)) {
@@ -596,6 +779,24 @@ function getNaukriPostedAge(record) {
   const amount = Number(match[1]);
   const unit = match[2].replace(/s$/, "");
   return amount * (unit === "hour" ? 1 / 24 : unit === "day" ? 1 : unit === "week" ? 7 : 30);
+}
+
+function getNaukriPostedTimestamp(record) {
+  const estimate = Date.parse(String(record.postedDateEstimate || ""));
+  if (Number.isFinite(estimate)) {
+    return estimate;
+  }
+  const capturedAt = Date.parse(String(record.capturedAt || ""));
+  if (!Number.isFinite(capturedAt)) {
+    return null;
+  }
+  const age = getNaukriPostedAge(record);
+  if (age !== null) {
+    return capturedAt - age * 24 * 60 * 60 * 1000;
+  }
+  return /^few hours ago$/i.test(String(record.postedText || "").trim())
+    ? capturedAt - 3 * 60 * 60 * 1000
+    : null;
 }
 
 function comparePostedRecords(first, second, direction, siteId = SITE_ID) {
@@ -636,10 +837,36 @@ function comparePostedRecords(first, second, direction, siteId = SITE_ID) {
     }
   }
 
-  const firstDate = Date.parse(first.postedDateEstimate || first.capturedAt || "");
-  const secondDate = Date.parse(second.postedDateEstimate || second.capturedAt || "");
+  if (siteId === "linkedin") {
+    const firstDate = getLinkedInPostedTimestamp(first);
+    const secondDate = getLinkedInPostedTimestamp(second);
+    if (firstDate === null || secondDate === null) {
+      if (firstDate === null && secondDate === null) {
+        return 0;
+      }
+      return firstDate === null ? 1 : -1;
+    }
+    return (firstDate - secondDate) * direction;
+  }
+
+  const firstDate = Date.parse(
+    first.postedDateEstimate
+    || ("${escapeHtml(SITE_ID)}" === "naukri" ? first.capturedAt : "")
+    || ""
+  );
+  const secondDate = Date.parse(
+    second.postedDateEstimate
+    || ("${escapeHtml(SITE_ID)}" === "naukri" ? second.capturedAt : "")
+    || ""
+  );
   const normalizedFirst = Number.isNaN(firstDate) ? -Infinity : firstDate;
   const normalizedSecond = Number.isNaN(secondDate) ? -Infinity : secondDate;
+  if (
+    "${escapeHtml(SITE_ID)}" === "linkedin"
+    && Number.isFinite(normalizedFirst) !== Number.isFinite(normalizedSecond)
+  ) {
+    return Number.isFinite(normalizedFirst) ? -1 : 1;
+  }
   return (normalizedFirst - normalizedSecond) * direction;
 }
 
@@ -670,8 +897,14 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     tabId: getRecordTab(record),
     companyApplyUrl: validHttpUrl(record.companyApplyUrl),
     postedType: record.postedType,
-    postedText: String(record.postedText || "Date not listed"),
-    postedDateEstimate: String(record.postedDateEstimate || ""),
+    postedText: SITE_ID === "linkedin"
+      ? getLinkedInPostedText(record) || "Date not listed"
+      : String(record.postedText || "Date not listed"),
+    postedDateEstimate: String(
+      SITE_ID === "linkedin" && getLinkedInPostedTimestamp(record) !== null
+        ? new Date(getLinkedInPostedTimestamp(record)).toISOString()
+        : record.postedDateEstimate || ""
+    ),
     postedApprox: record.postedApprox === true,
     pubDate: typeof record.pubDate === "number" || typeof record.pubDate === "string"
       ? record.pubDate
@@ -948,6 +1181,37 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     };
     const comparePosted = (first, second, direction) => {
       if ("${escapeHtml(SITE_ID)}" !== "indeed") {
+        if ("${escapeHtml(SITE_ID)}" === "linkedin") {
+          const age = (record) => {
+            const text = String(record.postedText || "")
+              .replace(/\\b(?:over\\s+)?[\\d,]+\\+?\\s+people clicked apply\\b|\\b1 person clicked apply\\b/gi, "")
+              .replace(/\\s*[·•]\\s*/g, " ")
+              .trim()
+              .toLowerCase();
+            if (/^(?:just now|just posted|today)$/.test(text)) return 0;
+            if (text === "yesterday") return 86400000;
+            const match = text.match(/^(\\d+)\\+?\\s*(minutes?|hours?|days?|weeks?|months?|years?)\\s+ago$/);
+            if (!match) return null;
+            const unit = match[2].replace(/s$/, "");
+            const duration = {
+              minute: 60000,
+              hour: 3600000,
+              day: 86400000,
+              week: 604800000,
+              month: 2592000000,
+              year: 31536000000
+            }[unit];
+            return Number(match[1]) * duration;
+          };
+          const firstAge = age(first);
+          const secondAge = age(second);
+          if (firstAge !== null && secondAge !== null) {
+            return (secondAge - firstAge) * direction;
+          }
+          if (firstAge !== null || secondAge !== null) {
+            return firstAge !== null ? -1 : 1;
+          }
+        }
         if ("${escapeHtml(SITE_ID)}" === "naukri") {
           const age = (record) => {
             const text = String(record.postedText || "").trim().toLowerCase();
@@ -969,8 +1233,9 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         }
         const firstDate = Date.parse(first.postedDateEstimate || first.capturedAt || "");
         const secondDate = Date.parse(second.postedDateEstimate || second.capturedAt || "");
-        return ((Number.isNaN(firstDate) ? -Infinity : firstDate)
-          - (Number.isNaN(secondDate) ? -Infinity : secondDate)) * direction;
+        const normalizedFirst = Number.isNaN(firstDate) ? -Infinity : firstDate;
+        const normalizedSecond = Number.isNaN(secondDate) ? -Infinity : secondDate;
+        return (normalizedFirst - normalizedSecond) * direction;
       }
       const kind = (record) => record.sponsored === true
         ? { type: "unknown", timestamp: null }
@@ -1438,6 +1703,53 @@ function closeSettingsMenu() {
   elements.settingsButton.setAttribute("aria-expanded", "false");
 }
 
+function renderFlowLogs(entries) {
+  const logs = Array.isArray(entries) ? entries.slice(-200) : [];
+  elements.logsHeading.textContent = `${SITE_ADAPTER.label} flow logs`;
+  elements.logsSummary.textContent = logs.length
+    ? `Showing the latest ${logs.length} diagnostic entries. Flow logging is ${storageSnapshot.flowLoggingEnabled ? "on" : "off"}.`
+    : `No diagnostic entries are saved for ${SITE_ADAPTER.label}. Flow logging is ${storageSnapshot.flowLoggingEnabled ? "on" : "off"}.`;
+  elements.logsContent.value = logs.length ? JSON.stringify(logs, null, 2) : "No logs yet.";
+  elements.copyLogsButton.disabled = logs.length === 0;
+  elements.logsError.hidden = true;
+  elements.logsCopyStatus.textContent = "";
+}
+
+async function openLogsDialog() {
+  elements.logsError.hidden = true;
+  elements.logsCopyStatus.textContent = "";
+  try {
+    const values = await chrome.storage.local.get(STORAGE_KEYS.diagnostics);
+    renderFlowLogs(values[STORAGE_KEYS.diagnostics]);
+    if (!elements.logsDialog.open) {
+      elements.logsDialog.showModal();
+    }
+  } catch (error) {
+    elements.logsError.textContent = `Could not load logs: ${error.message}`;
+    elements.logsError.hidden = false;
+    if (!elements.logsDialog.open) {
+      elements.logsDialog.showModal();
+    }
+  }
+}
+
+async function copyFlowLogs() {
+  if (elements.copyLogsButton.disabled) {
+    return;
+  }
+  try {
+    if (!globalThis.navigator || !globalThis.navigator.clipboard
+      || typeof globalThis.navigator.clipboard.writeText !== "function") {
+      throw new Error("Clipboard access is unavailable. Select and copy the log text manually.");
+    }
+    await globalThis.navigator.clipboard.writeText(elements.logsContent.value);
+    elements.logsCopyStatus.textContent = "Logs copied.";
+  } catch (error) {
+    elements.logsError.textContent = `Could not copy logs: ${error.message}`;
+    elements.logsError.hidden = false;
+  }
+}
+
 function renderSkipTitleList() {
   const titles = storageSnapshot.skipTitles;
   elements.skipTitleList.replaceChildren();
@@ -1773,8 +2085,15 @@ function createJobRow(record, tab, index) {
       ? "30+ days"
       : SITE_ID === "indeed" && getIndeedPostedTimestamp(record) === null
         ? "Date unavailable"
-        : record.postedText || (SITE_ID === "indeed" ? "Posted date" : "Date not listed");
+        : SITE_ID === "linkedin"
+          ? getLinkedInPostedText(record) || "Date not listed"
+          : SITE_ID === "naukri"
+            ? getNaukriPostedText(record) || "Date not listed"
+            : record.postedText || (SITE_ID === "indeed" ? "Posted date" : "Date not listed");
   const postedRelative = createTextElement("span", "posted-relative", postedLabel);
+  if (SITE_ID === "linkedin" || SITE_ID === "naukri") {
+    dynamicPostedLabels.set(jobId, { element: postedRelative, record });
+  }
   if (SITE_ID === "indeed" && record.postedApprox) {
     postedRelative.setAttribute(
       "title",
@@ -1962,18 +2281,7 @@ function render() {
       (record) => record.applicantReviewStatus === "actively-reviewing"
     ).length;
     const now = Date.now();
-    const freshCount = records.filter((record) => {
-      if (
-        SITE_ID === "indeed"
-        && /^(?:just posted|today)$/i.test(String(record.postedText || "").trim())
-      ) {
-        return true;
-      }
-      const postedAt = SITE_ID === "indeed"
-        ? getIndeedPostedTimestamp(record)
-        : Date.parse(String(record.postedDateEstimate || ""));
-      return Number.isFinite(postedAt) && postedAt <= now && now - postedAt < 24 * 60 * 60 * 1000;
-    }).length;
+    const freshCount = countFreshPostedRecords(records, now);
     elements.summaryTotal.textContent = String(records.length);
     elements.summarySite.textContent = SITE_ADAPTER.label;
     const hiddenCount = records.filter((record) => (
@@ -1991,6 +2299,7 @@ function render() {
     elements.parseWarningFooter.hidden = true;
     elements.parseWarningFooter.textContent = "";
     elements.tableBody.replaceChildren();
+    dynamicPostedLabels.clear();
     visibleRecords.forEach((record, index) => {
       elements.tableBody.appendChild(createJobRow(record, selectedTab, index + 1));
     });
@@ -2209,7 +2518,8 @@ async function initializeResultsPage() {
     STORAGE_KEYS.runState,
     STORAGE_KEYS.selectedTab,
     STORAGE_KEYS.filters,
-    getSkipTitlesStorageKey(siteId)
+    getSkipTitlesStorageKey(siteId),
+    STORAGE_KEYS.flowLogging
   ]);
   storageSnapshot = {
     jobsById: await readSiteJobs(),
@@ -2218,8 +2528,10 @@ async function initializeResultsPage() {
     filterSettings: normalizeFilterSettings(values[STORAGE_KEYS.filters]),
     collectorState: values[STORAGE_KEYS.runState] || null,
     resultsSelectedTab: values[STORAGE_KEYS.selectedTab] || null,
-    skipTitles: normalizeSkipTitles(values[getSkipTitlesStorageKey(siteId)])
+    skipTitles: normalizeSkipTitles(values[getSkipTitlesStorageKey(siteId)]),
+    flowLoggingEnabled: values[STORAGE_KEYS.flowLogging] === true
   };
+  elements.flowLoggingToggle.checked = storageSnapshot.flowLoggingEnabled;
   renderSkipTitleList();
   setFilterControls(storageSnapshot.filterSettings);
   chooseInitialTab(getRecords());
@@ -2228,6 +2540,7 @@ async function initializeResultsPage() {
   }
   render();
   setDefaultHistoryRange();
+  schedulePostedAgeRefresh();
 }
 
 function handleTabKeydown(event, tab) {
@@ -2286,6 +2599,27 @@ elements.skipTitlesButton.addEventListener("click", () => {
   closeSettingsMenu();
   void openSkipTitleDialog().catch((error) => {
     showSkipTitleError(`Could not load skip titles: ${error.message}`);
+  });
+});
+elements.viewLogsButton.addEventListener("click", () => {
+  closeSettingsMenu();
+  void openLogsDialog();
+});
+elements.logsClose.addEventListener("click", () => {
+  elements.logsDialog.close();
+});
+elements.copyLogsButton.addEventListener("click", () => {
+  void copyFlowLogs();
+});
+elements.flowLoggingToggle.addEventListener("change", () => {
+  const enabled = elements.flowLoggingToggle.checked;
+  const updates = { [STORAGE_KEYS.flowLogging]: enabled };
+  if (enabled && !storageSnapshot.flowLoggingEnabled) {
+    updates[STORAGE_KEYS.diagnostics] = [];
+  }
+  void chrome.storage.local.set(updates).catch((error) => {
+    elements.flowLoggingToggle.checked = storageSnapshot.flowLoggingEnabled;
+    setFeedback(`Could not update flow logging: ${error.message}`);
   });
 });
 elements.skipTitleClose.addEventListener("click", () => {
@@ -2366,6 +2700,19 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     } else if (key === getSkipTitlesStorageKey()) {
       storageSnapshot.skipTitles = normalizeSkipTitles(change.newValue);
       renderSkipTitleList();
+    } else if (key === STORAGE_KEYS.flowLogging) {
+      storageSnapshot.flowLoggingEnabled = change.newValue === true;
+      elements.flowLoggingToggle.checked = storageSnapshot.flowLoggingEnabled;
+      if (elements.logsDialog.open) {
+        void chrome.storage.local.get(STORAGE_KEYS.diagnostics).then((values) => {
+          renderFlowLogs(values[STORAGE_KEYS.diagnostics]);
+        }).catch((error) => {
+          elements.logsError.textContent = `Could not refresh logs: ${error.message}`;
+          elements.logsError.hidden = false;
+        });
+      }
+    } else if (key === STORAGE_KEYS.diagnostics && elements.logsDialog.open) {
+      renderFlowLogs(change.newValue);
     }
   }
   if (

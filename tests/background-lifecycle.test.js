@@ -455,6 +455,14 @@ async function run() {
     JSON.parse(JSON.stringify(lastDiagnostic.details)),
     { jobId: "901", reason: "unspecified", pageNumber: 1 }
   );
+  await vm.runInContext(
+    `appendDiagnostic("dedupe-run", "job-error", { message: "Could not load https://www.linkedin.com/jobs/search-results/?keywords=secret token=private" })`,
+    context
+  );
+  assert.equal(
+    store.collectorDiagnostics.at(-1).details.message,
+    "Could not load [url] token=[redacted]"
+  );
   const diagnosticWrites = Array.from({ length: 205 }, (_, index) => (
     vm.runInContext(
       `appendDiagnostic("dedupe-run", "run-ended", { pageNumber: ${index + 1}, reason: "DONE" })`,

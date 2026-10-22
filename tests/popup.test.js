@@ -8,6 +8,7 @@ async function run() {
   const elements = new Map();
   const storageListeners = [];
   const createdTabs = [];
+  const sentMessages = [];
   for (const id of [
     "start",
     "stop",
@@ -16,7 +17,11 @@ async function run() {
     const listeners = {};
     elements.set(id, {
       disabled: false,
+      hidden: false,
       title: "",
+      textContent: "",
+      attributes: {},
+      setAttribute(name, value) { this.attributes[name] = value; },
       addEventListener(name, callback) { listeners[name] = callback; },
       async dispatch(name) { return listeners[name]?.({ target: this }); }
     });
@@ -71,16 +76,24 @@ async function run() {
     },
     runtime: {
       getURL(path) { return `chrome-extension://collector-test/${path}`; },
-      async sendMessage() { return { ok: true }; }
+      async sendMessage(message) {
+        sentMessages.push(message);
+        return { ok: true, enabled: message.enabled };
+      }
     }
   };
-  const adapter = {
-    id: "indeed",
-    limits: {
-      maxPages: 50,
-      maxJobsPerRun: 500,
-      maxJobsPerDay: 2000
+  const adapters = Object.fromEntries(["linkedin", "naukri", "indeed"].map((siteId) => [
+    siteId,
+    {
+      id: siteId,
+      limits: { maxPages: 50, maxJobsPerRun: 500, maxJobsPerDay: 2000 }
     }
+  ]));
+  const getAdapterForUrl = (value) => {
+    const siteId = value.includes("linkedin.com")
+      ? "linkedin"
+      : (value.includes("naukri.com") ? "naukri" : (value.includes("indeed.com") ? "indeed" : null));
+    return siteId ? adapters[siteId] : null;
   };
   const context = vm.createContext({
     document: { getElementById(id) { return elements.get(id); } },
@@ -89,9 +102,7 @@ async function run() {
     Date,
     globalThis: {
       JobCollectorSiteRegistry: {
-        getAdapterForUrl(value) {
-          return value.startsWith("https://in.indeed.com") ? adapter : null;
-        }
+        getAdapterForUrl
       },
       JobCollectorStorage: {
         keysForSite(siteId) {
@@ -99,7 +110,8 @@ async function run() {
             runState: `runs.${siteId}`,
             notice: `notices.${siteId}`,
             budget: `budgets.${siteId}`,
-            cooldown: `cooldown.${siteId}`
+            cooldown: `cooldown.${siteId}`,
+            flowLogging: `debug.${siteId}`
           };
         }
       },
@@ -130,7 +142,7 @@ async function run() {
   const popupHtml = fs.readFileSync("popup.html", "utf8");
   assert.equal((popupHtml.match(/<button\b/g) || []).length, 3);
   assert.doesNotMatch(popupHtml, /Jobs this run|Jobs today|<output|<h1/);
-  console.log("Popup tests passed: compact three-button controls and View opens the results tab.");
+  console.log("Popup tests passed: compact Start/Stop/View controls and results-page logging settings.");
 }
 
 run().catch((error) => {

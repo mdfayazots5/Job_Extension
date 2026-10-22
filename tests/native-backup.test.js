@@ -60,44 +60,59 @@ async function run() {
     "progress.linkedin": { currentPage: 3 },
     "diagnostics.linkedin": [{ event: "temporary" }]
   };
+  const backupErrors = [];
+  let activeNativeRequests = 0;
+  let maxConcurrentNativeRequests = 0;
+  let failNextRecordBackup = false;
   const chrome = {
     runtime: {
       async sendNativeMessage(_host, request) {
-        if (request.type === "upsertSetting") {
-          archivedSettings.set(request.key, request.value);
-          return { ok: true, saved: true };
-        }
-        if (request.type === "listSettings") {
-          return {
-            ok: true,
-            settings: [...archivedSettings.entries()].map(([key, value]) => ({ key, value }))
-          };
-        }
-        if (request.type === "upsert") {
-          const key = `${request.siteId}:${request.record.jobId}`;
-          const existing = archived.get(key);
-          if (!existing || JSON.stringify(existing) !== JSON.stringify(request.record)) {
-            archived.set(key, request.record);
+        activeNativeRequests += 1;
+        maxConcurrentNativeRequests = Math.max(maxConcurrentNativeRequests, activeNativeRequests);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (request.type === "upsertSetting") {
+            archivedSettings.set(request.key, request.value);
+            return { ok: true, saved: true };
           }
-          return { ok: true, saved: true };
+          if (request.type === "listSettings") {
+            return {
+              ok: true,
+              settings: [...archivedSettings.entries()].map(([key, value]) => ({ key, value }))
+            };
+          }
+          if (request.type === "upsert") {
+            if (failNextRecordBackup) {
+              failNextRecordBackup = false;
+              throw new Error("Simulated archive sharing violation.");
+            }
+            const key = `${request.siteId}:${request.record.jobId}`;
+            const existing = archived.get(key);
+            if (!existing || JSON.stringify(existing) !== JSON.stringify(request.record)) {
+              archived.set(key, request.record);
+            }
+            return { ok: true, saved: true };
+          }
+          if (request.type === "list") {
+            const entries = [...archived.entries()]
+              .sort(([left], [right]) => left.localeCompare(right));
+            const page = entries.slice(request.offset, request.offset + request.limit);
+            const nextOffset = request.offset + page.length < entries.length
+              ? request.offset + page.length
+              : null;
+            return {
+              ok: true,
+              records: page.map(([, record]) => ({
+                siteId: record.siteId,
+                record
+              })),
+              nextOffset
+            };
+          }
+          throw new Error(`Unexpected native backup request: ${request.type}`);
+        } finally {
+          activeNativeRequests -= 1;
         }
-        if (request.type === "list") {
-          const entries = [...archived.entries()]
-            .sort(([left], [right]) => left.localeCompare(right));
-          const page = entries.slice(request.offset, request.offset + request.limit);
-          const nextOffset = request.offset + page.length < entries.length
-            ? request.offset + page.length
-            : null;
-          return {
-            ok: true,
-            records: page.map(([, record]) => ({
-              siteId: record.siteId,
-              record
-            })),
-            nextOffset
-          };
-        }
-        throw new Error(`Unexpected native backup request: ${request.type}`);
       }
     },
     storage: {
@@ -118,7 +133,15 @@ async function run() {
       }
     }
   };
-  const context = vm.createContext({ chrome, Date });
+  const context = vm.createContext({
+    chrome,
+    Date,
+    console: {
+      error(...args) {
+        backupErrors.push(args);
+      }
+    }
+  });
   for (const file of ["src/core/storage.js", "src/core/native-backup.js"]) {
     vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
   }
@@ -143,6 +166,7 @@ async function run() {
   });
   assert.equal(store["ui.lastSite"], "linkedin");
   assert.equal(archivedSettings.get("ui.lastSite"), "linkedin");
+  assert.equal(maxConcurrentNativeRequests, 1, "native archive requests overlapped");
   assert.deepEqual(JSON.parse(JSON.stringify(store["cooldown.linkedin"])), { until: 12345, recentBlocks: [] });
   assert.deepEqual(JSON.parse(JSON.stringify(store["killswitch.naukri"])), {
     triggerCount: 2,
@@ -174,6 +198,21 @@ async function run() {
   });
   assert.equal(archived.has("naukri:3"), true);
   assert.equal(archived.get("naukri:4").title, "New Naukri job");
+  failNextRecordBackup = true;
+  await context.JobCollectorStorage.setJobs("linkedin", {
+    ...await context.JobCollectorStorage.getJobs("linkedin"),
+    "5": {
+      siteId: "linkedin",
+      jobId: "5",
+      title: "Locally saved despite archive lock",
+      capturedAt: "2026-10-21T12:00:00.000Z",
+      url: "https://www.linkedin.com/jobs/view/5/"
+    }
+  });
+  assert.equal(store.records["linkedin:5"].title, "Locally saved despite archive lock");
+  assert.equal(archived.has("linkedin:5"), false);
+  assert.equal(backupErrors.length, 1);
+  assert.match(backupErrors[0][0], /next extension startup/);
   console.log("Native backup tests passed: all sites restore old and new records without deleting archive entries.");
 }
 

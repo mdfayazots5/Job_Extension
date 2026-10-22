@@ -1,9 +1,18 @@
 "use strict";
 
 (function initializeJobMetadata(global) {
-  const RELATIVE_TIME = /(\d+)\+?\s*(minutes?|hours?|days?|weeks?|months?)\s+ago/i;
+  const RELATIVE_TIME = /(\d+)\+?\s*(minutes?|hours?|days?|weeks?|months?|years?)\s+ago/i;
   const POSTED_WORDS = /\b(?:reposted|posted)\b/i;
   const RELATIVE_WORDS = /\b(?:just now|today|yesterday)\b/i;
+  const APPLY_ACTIVITY = /\b(?:over\s+)?[\d,]+\+?\s+people clicked apply\b|\b1 person clicked apply\b/gi;
+
+  function cleanPostedText(value) {
+    return String(value || "")
+      .replace(APPLY_ACTIVITY, "")
+      .replace(/\s*[·•]\s*/g, " · ")
+      .replace(/^[\s·]+|[\s·]+$/g, "")
+      .trim();
+  }
 
   function isPostedSegment(segment) {
     return POSTED_WORDS.test(segment)
@@ -32,7 +41,7 @@
     return Array.from(location).slice(0, 60).join("").trim();
   }
 
-  function estimatePostedDate(postedText, capturedAt) {
+  function estimatePostedTimestamp(postedText, capturedAt) {
     const estimate = new Date(capturedAt);
     if (Number.isNaN(estimate.getTime())) {
       return null;
@@ -41,10 +50,10 @@
     const text = String(postedText || "").trim();
     if (/\byesterday\b/i.test(text)) {
       estimate.setDate(estimate.getDate() - 1);
-      return estimate.toISOString().slice(0, 10);
+      return estimate.toISOString();
     }
     if (/\b(?:just now|today)\b/i.test(text)) {
-      return estimate.toISOString().slice(0, 10);
+      return estimate.toISOString();
     }
 
     const match = text.match(RELATIVE_TIME);
@@ -62,6 +71,8 @@
       estimate.setDate(estimate.getDate() - amount);
     } else if (unit.startsWith("week")) {
       estimate.setDate(estimate.getDate() - (amount * 7));
+    } else if (unit.startsWith("year")) {
+      estimate.setFullYear(estimate.getFullYear() - amount);
     } else {
       const day = estimate.getDate();
       estimate.setDate(1);
@@ -73,7 +84,12 @@
       ).getDate();
       estimate.setDate(Math.min(day, lastDay));
     }
-    return estimate.toISOString().slice(0, 10);
+    return estimate.toISOString();
+  }
+
+  function estimatePostedDate(postedText, capturedAt) {
+    const timestamp = estimatePostedTimestamp(postedText, capturedAt);
+    return timestamp ? timestamp.slice(0, 10) : null;
   }
 
   function parseDetailMeta(text, capturedAt, context = {}) {
@@ -92,11 +108,11 @@
     const postedRaw = (postedSegments.length ? postedSegments : segments.slice(1))
       .join(" · ");
     const reposted = /\breposted\b/i.test(postedRaw);
-    const postedText = postedRaw
+    const postedText = cleanPostedText(postedRaw
       .replace(/\b(?:reposted|posted)\b/gi, "")
       .replace(/\s*·\s*/g, " · ")
       .replace(/^[\s·:,-]+|[\s·:,-]+$/g, "")
-      .trim();
+      .trim());
     const postedType = reposted
       ? "Reposted"
       : (isPostedSegment(postedRaw) ? "Posted" : "Unknown");
@@ -111,7 +127,9 @@
 
   const api = Object.freeze({
     parseDetailMeta,
-    estimatePostedDate
+    estimatePostedDate,
+    estimatePostedTimestamp,
+    cleanPostedText
   });
   global.JobCollectorMetadata = api;
   if (typeof module !== "undefined" && module.exports) {
