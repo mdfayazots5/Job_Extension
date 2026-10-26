@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("JobHistoryHost")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c1ea35d303ba4a9328e4aa8763e3ad2ce229ed13")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+efe494892009fcd275b74bca8cf58f1fc50fe12f")]
 [assembly: System.Reflection.AssemblyProductAttribute("JobHistoryHost")]
 [assembly: System.Reflection.AssemblyTitleAttribute("JobHistoryHost")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
