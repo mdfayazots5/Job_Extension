@@ -2,7 +2,7 @@
 
 (function initializeJobCollectorNativeBackup(global) {
   const HOST_NAME = "com.jobextensions.history";
-  const PAGE_SIZE = 25;
+  const PAGE_SIZE = 500;
   const SUPPORTED_SITES = new Set(["linkedin", "naukri", "indeed"]);
   const STATUS_SETTING_KEYS = Object.freeze(
     Array.from(SUPPORTED_SITES).flatMap((siteId) => [
@@ -66,6 +66,19 @@
   async function upsertRecord(siteId, record) {
     validateRecord(siteId, record);
     await send({ type: "upsert", siteId, record });
+  }
+
+  async function upsertRecords(records) {
+    if (!Array.isArray(records) || records.length < 1 || records.length > 100) {
+      throw new Error("A bounded list of job records is required for backup.");
+    }
+    for (const item of records) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error("A valid site and job record are required for backup.");
+      }
+      validateRecord(item.siteId, item.record);
+    }
+    await send({ type: "upsertRecords", records });
   }
 
   function validateSettingsKey(key) {
@@ -283,13 +296,16 @@
         }
       }
 
-      for (const [key, record] of archiveWinners) {
+      const winningRecords = Array.from(archiveWinners, ([key, record]) => {
         const separator = key.indexOf(":");
         const siteId = key.slice(0, separator);
         if (!SUPPORTED_SITES.has(siteId)) {
           throw new Error("The local job-history backup contains an unsupported site.");
         }
-        await upsertRecord(siteId, record);
+        return { siteId, record };
+      });
+      for (let offset = 0; offset < winningRecords.length; offset += 100) {
+        await upsertRecords(winningRecords.slice(offset, offset + 100));
       }
       const archivedStatuses = await getAllJobStatuses();
       const originalArchivedStatuses = Object.fromEntries(
@@ -409,6 +425,7 @@
 
   global.JobCollectorNativeBackup = Object.freeze({
     upsertRecord,
+    upsertRecords,
     upsertSetting,
     updateJobStatus,
     updateJobStatuses,

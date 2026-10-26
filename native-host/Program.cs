@@ -21,6 +21,7 @@ internal static class Program
             var response = request["type"]?.GetValue<string>() switch
             {
                 "upsert" => await UpsertAsync(request),
+                "upsertRecords" => await UpsertRecordsAsync(request),
                 "list" => await ListAsync(request),
                 "upsertSetting" => await UpsertSettingAsync(request),
                 "listSettings" => await ListSettingsAsync(),
@@ -398,13 +399,62 @@ internal static class Program
         return new JsonObject { ["ok"] = true, ["saved"] = true };
     }
 
+    private static async Task<JsonObject> UpsertRecordsAsync(JsonObject request)
+    {
+        if (request["records"] is not JsonArray records || records.Count is < 1 or > 100)
+        {
+            throw new InvalidDataException("A bounded list of job records is required.");
+        }
+
+        var entries = new List<byte[]>(records.Count);
+        foreach (var recordNode in records)
+        {
+            var item = recordNode?.AsObject()
+                ?? throw new InvalidDataException("A job record entry is invalid.");
+            var siteId = item["siteId"]?.GetValue<string>();
+            var record = item["record"]?.AsObject()
+                ?? throw new InvalidDataException("A job record is required.");
+            if (siteId is null || !SupportedSites.Contains(siteId))
+            {
+                throw new InvalidDataException("The backup site is not supported.");
+            }
+            var jobId = record["jobId"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 256)
+            {
+                throw new InvalidDataException("The backup job ID is invalid.");
+            }
+            if (siteId == "indeed"
+                && record["url"]?.GetValue<string>() != $"https://in.indeed.com/viewjob?jk={jobId}")
+            {
+                throw new InvalidDataException("Indeed records must use their canonical viewjob URL.");
+            }
+
+            var entry = new JsonObject
+            {
+                ["siteId"] = siteId,
+                ["jobId"] = jobId,
+                ["record"] = record.DeepClone(),
+                ["archivedAt"] = DateTimeOffset.UtcNow.ToString("O")
+            };
+            entries.Add(Encoding.UTF8.GetBytes(entry.ToJsonString() + "\n"));
+        }
+
+        await using var stream = await OpenAppendStreamWithRetryAsync(FindBackupPath());
+        foreach (var bytes in entries)
+        {
+            await stream.WriteAsync(bytes);
+        }
+        stream.Flush(flushToDisk: true);
+        return new JsonObject { ["ok"] = true, ["saved"] = true };
+    }
+
     private static async Task<JsonObject> ListAsync(JsonObject request)
     {
         var offset = ReadNonNegativeInteger(request["offset"], "offset");
         var requestedLimit = ReadNonNegativeInteger(request["limit"], "limit");
-        if (requestedLimit is < 1 or > 100)
+        if (requestedLimit is < 1 or > 500)
         {
-            throw new InvalidDataException("The backup page size must be between 1 and 100.");
+            throw new InvalidDataException("The backup page size must be between 1 and 500.");
         }
 
         var latest = new Dictionary<string, JsonObject>(StringComparer.Ordinal);

@@ -452,6 +452,11 @@ function appendFlowDiagnostic(event, details = {}) {
     if (typeof details.ok === "boolean") {
       safeDetails.ok = details.ok;
     }
+    for (const key of ["elapsedMs", "restored", "synchronized"]) {
+      if (Number.isSafeInteger(details[key]) && details[key] >= 0) {
+        safeDetails[key] = details[key];
+      }
+    }
     await chrome.storage.local.set({
       [STORAGE_KEYS.diagnostics]: (Array.isArray(values[STORAGE_KEYS.diagnostics])
         ? values[STORAGE_KEYS.diagnostics]
@@ -629,17 +634,34 @@ async function persistRunFailure(error) {
 function initializeStorage() {
   if (!initializationPromise) {
     initializationPromise = (async () => {
+      const initializationStartedAt = Date.now();
+      await appendFlowDiagnostic("linkedin_migration_started");
       await globalThis.JobCollectorLinkedInMigration.run();
+      await appendFlowDiagnostic("linkedin_migration_completed", {
+        elapsedMs: Date.now() - initializationStartedAt
+      });
       if (!globalThis.JobCollectorNativeBackup) {
         throw new Error("The local job-history backup module is not loaded.");
       }
       if (!archiveRestorePromise) {
+        await appendFlowDiagnostic("archive_restore_started", {
+          elapsedMs: Date.now() - initializationStartedAt
+        });
         archiveRestorePromise = globalThis.JobCollectorNativeBackup.restoreArchive();
       }
       try {
-        await archiveRestorePromise;
+        const archiveResult = await archiveRestorePromise;
+        await appendFlowDiagnostic("archive_restore_completed", {
+          elapsedMs: Date.now() - initializationStartedAt,
+          restored: archiveResult.restored,
+          synchronized: archiveResult.synchronized
+        });
       } catch (error) {
         archiveRestorePromise = null;
+        await appendFlowDiagnostic("archive_restore_failed", {
+          elapsedMs: Date.now() - initializationStartedAt,
+          error: errorMessage(error)
+        });
         throw error;
       }
 
