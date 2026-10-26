@@ -52,6 +52,8 @@ const CONTENT_FILES = [
 ];
 let initializationPromise;
 let archiveRestorePromise;
+let initializationStage = "not-started";
+let initializationStartedAt = null;
 let storageInitialized = false;
 let progressQueue = Promise.resolve();
 let diagnosticQueue = Promise.resolve();
@@ -292,7 +294,18 @@ function appendDiagnostic(runId, event, details = {}, component = "background") 
       "reason",
       "message",
       "beforeScrollTop",
+      "afterScrollTop",
+      "actualScrollDelta",
       "requestedScrollAmount",
+      "lazyColumnCount",
+      "jobCardCount",
+      "jobIdNodeCount",
+      "jobLinkCount",
+      "pagerButtonCount",
+      "candidateCount",
+      "identifiedJobCount",
+      "newlyQueuedJobCount",
+      "selectorErrorCount",
       "observerResult",
       "newlyQueuedJobIds",
       "renderedJobIds",
@@ -348,6 +361,10 @@ function appendDiagnostic(runId, event, details = {}, component = "background") 
       "job-card-click",
       "detail-loaded",
       "page-start",
+      "selector-scan-start",
+      "selector-scan-complete",
+      "selector-scan-no-results-container",
+      "selector-error",
       "results-scroll-step",
       "job-error",
       "pagination-click",
@@ -451,6 +468,16 @@ function appendFlowDiagnostic(event, details = {}) {
     }
     if (typeof details.ok === "boolean") {
       safeDetails.ok = details.ok;
+    }
+    if ([
+      "not-started",
+      "linkedin-migration",
+      "archive-restore",
+      "storage-initialization",
+      "complete",
+      "failed"
+    ].includes(details.stage)) {
+      safeDetails.stage = details.stage;
     }
     for (const key of ["elapsedMs", "restored", "synchronized"]) {
       if (Number.isSafeInteger(details[key]) && details[key] >= 0) {
@@ -634,7 +661,8 @@ async function persistRunFailure(error) {
 function initializeStorage() {
   if (!initializationPromise) {
     initializationPromise = (async () => {
-      const initializationStartedAt = Date.now();
+      initializationStartedAt = Date.now();
+      initializationStage = "linkedin-migration";
       await appendFlowDiagnostic("linkedin_migration_started");
       await globalThis.JobCollectorLinkedInMigration.run();
       await appendFlowDiagnostic("linkedin_migration_completed", {
@@ -643,6 +671,7 @@ function initializeStorage() {
       if (!globalThis.JobCollectorNativeBackup) {
         throw new Error("The local job-history backup module is not loaded.");
       }
+      initializationStage = "archive-restore";
       if (!archiveRestorePromise) {
         await appendFlowDiagnostic("archive_restore_started", {
           elapsedMs: Date.now() - initializationStartedAt
@@ -665,6 +694,7 @@ function initializeStorage() {
         throw error;
       }
 
+      initializationStage = "storage-initialization";
       const values = await chrome.storage.local.get([
         STORAGE_KEYS.config,
         STORAGE_KEYS.runState,
@@ -712,7 +742,9 @@ function initializeStorage() {
         await chrome.storage.local.set(initialValues);
       }
       storageInitialized = true;
+      initializationStage = "complete";
     })().catch((error) => {
+      initializationStage = "failed";
       initializationPromise = null;
       throw error;
     });
@@ -1282,7 +1314,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       : (isLinkedInStart
         ? appendFlowDiagnostic("background_initialization_started")
         : Promise.resolve())
-        .then(() => initializeStorage())
+          .then(() => isLinkedInStart
+            ? appendFlowDiagnostic("background_initialization_waiting", {
+              stage: initializationStage,
+              elapsedMs: initializationStartedAt === null
+                ? 0
+                : Date.now() - initializationStartedAt
+            })
+            : undefined)
+          .then(() => initializeStorage())
         .then(() => isLinkedInStart
           ? appendFlowDiagnostic("background_initialization_completed")
           : undefined)

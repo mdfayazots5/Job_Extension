@@ -477,6 +477,54 @@
     ));
   }
 
+  function countMatches(root, selector, step, errors) {
+    try {
+      return root.querySelectorAll(selector).length;
+    } catch (error) {
+      errors.push({
+        step,
+        selector,
+        message: errorMessage(error)
+      });
+      return 0;
+    }
+  }
+
+  function getSelectorInventory(root, errors) {
+    return {
+      lazyColumnCount: countMatches(
+        root,
+        selectors.SELECTORS.scrollContainer,
+        "count results scroll containers",
+        errors
+      ),
+      jobCardCount: countMatches(
+        root,
+        selectors.SELECTORS.jobCards,
+        "count semantic job cards",
+        errors
+      ),
+      jobIdNodeCount: countMatches(
+        root,
+        selectors.SELECTORS.jobIds,
+        "count job-ID nodes",
+        errors
+      ),
+      jobLinkCount: countMatches(
+        root,
+        selectors.SELECTORS.jobLinks,
+        "count job links",
+        errors
+      ),
+      pagerButtonCount: countMatches(
+        root,
+        selectors.SELECTORS.nextButton,
+        "count next-page controls",
+        errors
+      )
+    };
+  }
+
   function notifyProgressErrors(runId, pageNumber, stats, errors) {
     const messages = collectSelectorErrors(errors);
     if (messages.length === 0) {
@@ -485,7 +533,14 @@
 
     const message = messages.join("; ");
     debugLog(message);
-    return writeProgress(runId, pageNumber, stats, { lastError: message });
+    return Promise.all([
+      writeProgress(runId, pageNumber, stats, { lastError: message }),
+      writeDiagnostic(runId, "selector-error", {
+        pageNumber,
+        selectorErrorCount: messages.length,
+        message
+      })
+    ]);
   }
 
   function randomDelay(range) {
@@ -1026,16 +1081,28 @@
     let stallSteps = 0;
     let activeStepIds = null;
     let consecutiveLoadFailures = 0;
+    let lastCardScan = {
+      candidateCount: 0,
+      identifiedJobCount: 0,
+      newlyQueuedJobCount: 0
+    };
 
     function scanCards() {
       const candidates = selectors.getCandidateElements(container, errors);
+      let identifiedJobCount = 0;
+      let newlyQueuedJobCount = 0;
       for (const card of candidates) {
         try {
           const job = selectors.getJobLinkForCard(card, errors);
-          if (!job || seenJobIds.has(job.jobId)) {
+          if (!job) {
+            continue;
+          }
+          identifiedJobCount += 1;
+          if (seenJobIds.has(job.jobId)) {
             continue;
           }
           seenJobIds.add(job.jobId);
+          newlyQueuedJobCount += 1;
           if (activeStepIds) {
             activeStepIds.add(job.jobId);
           }
@@ -1048,6 +1115,11 @@
           });
         }
       }
+      lastCardScan = {
+        candidateCount: candidates.length,
+        identifiedJobCount,
+        newlyQueuedJobCount
+      };
     }
 
     async function processPendingCards() {
@@ -1117,11 +1189,21 @@
 
     try {
       checkBlockingPage(errors);
+      const selectorInventory = getSelectorInventory(document, errors);
+      await writeDiagnostic(runId, "selector-scan-start", {
+        pageNumber,
+        ...selectorInventory
+      });
       container = selectors.getScrollableContainer(
         document,
         errors
       );
       if (!container) {
+        await writeDiagnostic(runId, "selector-scan-no-results-container", {
+          pageNumber,
+          ...selectorInventory,
+          selectorErrorCount: errors.length
+        });
         throw new Error(
           `Could not find a scrollable results container using selector "${selectors.SELECTORS.scrollContainer}".`
         );
@@ -1134,6 +1216,12 @@
       });
       observer = createMutationWatcher(container, scanCards, errors);
       scanCards();
+      await writeDiagnostic(runId, "selector-scan-complete", {
+        pageNumber,
+        ...selectorInventory,
+        ...lastCardScan,
+        selectorErrorCount: errors.length
+      });
       await awaitWithStop(
         runId,
         notifyProgressErrors(runId, pageNumber, stats, errors)
@@ -1159,12 +1247,18 @@
         );
         await ensureVisible(runId);
         scanCards();
+        const afterScroll = selectors.describeElement(container, document, errors);
         await writeDiagnostic(runId, "results-scroll-step", {
           pageNumber,
-          container: selectors.describeElement(container, document, errors),
+          container: afterScroll,
           beforeScrollTop: beforeScroll.scrollTop,
+          afterScrollTop: afterScroll.scrollTop,
+          actualScrollDelta: afterScroll.scrollTop - beforeScroll.scrollTop,
           requestedScrollAmount: scrollAmount,
           observerResult: scrollResult,
+          candidateCount: lastCardScan.candidateCount,
+          identifiedJobCount: lastCardScan.identifiedJobCount,
+          newlyQueuedJobCount: lastCardScan.newlyQueuedJobCount,
           newlyQueuedJobIds: Array.from(activeStepIds)
         });
         await awaitWithStop(

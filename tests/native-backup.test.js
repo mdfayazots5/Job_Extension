@@ -139,6 +139,9 @@ async function run() {
             return { ok: true, saved: true };
           }
           if (request.type === "list") {
+            if (request.limit < 1 || request.limit > 500) {
+              throw new Error("The backup page size must be between 1 and 500.");
+            }
             requestedPageSizes.push(request.limit);
             const entries = [...archived.entries()]
               .sort(([left], [right]) => left.localeCompare(right));
