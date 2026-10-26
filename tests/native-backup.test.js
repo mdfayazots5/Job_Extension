@@ -78,6 +78,8 @@ async function run() {
   let activeNativeRequests = 0;
   let maxConcurrentNativeRequests = 0;
   let failNextRecordBackup = false;
+  let recordBatchRequestCount = 0;
+  const requestedPageSizes = [];
   const chrome = {
     runtime: {
       async sendNativeMessage(_host, request) {
@@ -128,7 +130,16 @@ async function run() {
             }
             return { ok: true, saved: true };
           }
+          if (request.type === "upsertRecords") {
+            recordBatchRequestCount += 1;
+            for (const item of request.records) {
+              const key = `${item.siteId}:${item.record.jobId}`;
+              archived.set(key, item.record);
+            }
+            return { ok: true, saved: true };
+          }
           if (request.type === "list") {
+            requestedPageSizes.push(request.limit);
             const entries = [...archived.entries()]
               .sort(([left], [right]) => left.localeCompare(right));
             const page = entries.slice(request.offset, request.offset + request.limit);
@@ -196,6 +207,8 @@ async function run() {
   assert.equal(store.records["naukri:3"].applyType, "Easy Apply");
   assert.equal(store.records["indeed:0123456789abcdef"].title, "Old archived Indeed job");
   assert.equal(archived.size, 4);
+  assert.equal(recordBatchRequestCount, 1);
+  assert.deepEqual(requestedPageSizes, [500]);
   assert.deepEqual(JSON.parse(JSON.stringify(store["linkedin:skipTitles"])), ["Archived exact title"]);
   assert.deepEqual(JSON.parse(JSON.stringify(store["opened.linkedin"])), {
     "1": true,
