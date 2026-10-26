@@ -8,7 +8,7 @@ globalThis.JobCollectorConfig = Object.freeze({
   scrollStepRatio: 0.8,
   maxPages: 25,
   maxJobsPerRun: 500,
-  maxJobsPerDay: 2000,
+  maxJobsPerDay: 5000,
   maxHiddenMs: 300000,
   watchdogMs: 90000,
   circuitFailureLimit: 2,

@@ -4,12 +4,17 @@
   const HOST_NAME = "com.jobextensions.history";
   const PAGE_SIZE = 25;
   const SUPPORTED_SITES = new Set(["linkedin", "naukri", "indeed"]);
+  const STATUS_SETTING_KEYS = Object.freeze(
+    Array.from(SUPPORTED_SITES).flatMap((siteId) => [
+      `opened.${siteId}`,
+      `hidden.${siteId}`
+    ])
+  );
+  const STATUS_SETTING_KEY_SET = new Set(STATUS_SETTING_KEYS);
   const SETTINGS_KEYS = Object.freeze([
     "ui.lastSite",
     ...Array.from(SUPPORTED_SITES).flatMap((siteId) => [
       `${siteId}:skipTitles`,
-      `opened.${siteId}`,
-      `hidden.${siteId}`,
       `ui.${siteId}.filters`,
       `ui.${siteId}.selectedTab`,
       `budgets.${siteId}`,
@@ -18,6 +23,7 @@
     ])
   ]);
   const SETTINGS_KEY_SET = new Set(SETTINGS_KEYS);
+  const ARCHIVED_SETTING_KEY_SET = new Set([...SETTINGS_KEYS, ...STATUS_SETTING_KEYS]);
   let restorePromise = null;
   let nativeRequestQueue = Promise.resolve();
 
@@ -70,10 +76,90 @@
 
   async function upsertSetting(key, value) {
     validateSettingsKey(key);
+    if (STATUS_SETTING_KEY_SET.has(key)) {
+      throw new Error("Per-job opened and hidden statuses must use the shared status store.");
+    }
     if (value === undefined) {
       throw new Error("A setting value is required for backup.");
     }
     await send({ type: "upsertSetting", key, value });
+  }
+
+  function validateJobStatus(siteId, jobId, statusName, value) {
+    if (!SUPPORTED_SITES.has(siteId)
+      || typeof jobId !== "string"
+      || !jobId
+      || jobId.length > 256
+      || !["opened", "hidden"].includes(statusName)
+      || typeof value !== "boolean") {
+      throw new Error("A valid site, job ID, and boolean opened or hidden status are required.");
+    }
+  }
+
+  async function updateJobStatus(siteId, jobId, statusName, value) {
+    await updateJobStatuses(siteId, [{ jobId, [statusName]: value }]);
+  }
+
+  async function updateJobStatuses(siteId, updates) {
+    if (!SUPPORTED_SITES.has(siteId)
+      || !Array.isArray(updates)
+      || updates.length < 1
+      || updates.length > 1000) {
+      throw new Error("A supported site and bounded job-status updates are required.");
+    }
+    const normalizedUpdates = [];
+    for (const update of updates) {
+      if (!update || typeof update !== "object" || Array.isArray(update)
+        || typeof update.jobId !== "string" || !update.jobId || update.jobId.length > 256) {
+        throw new Error("A valid job ID is required for each status update.");
+      }
+      for (const statusName of ["opened", "hidden"]) {
+        if (Object.prototype.hasOwnProperty.call(update, statusName)) {
+          validateJobStatus(siteId, update.jobId, statusName, update[statusName]);
+          normalizedUpdates.push({
+            jobId: update.jobId,
+            statusName,
+            value: update[statusName]
+          });
+        }
+      }
+      if (!["opened", "hidden"].some((statusName) => (
+        Object.prototype.hasOwnProperty.call(update, statusName)
+      ))) {
+        throw new Error("Each status update must change opened or hidden state.");
+      }
+    }
+    if (normalizedUpdates.length > 1000) {
+      throw new Error("The job-status update batch is too large.");
+    }
+    await send({ type: "updateJobStatuses", siteId, updates: normalizedUpdates });
+  }
+
+  async function getJobStatuses(siteId) {
+    if (!SUPPORTED_SITES.has(siteId)) {
+      throw new Error("A supported site ID is required to read shared job statuses.");
+    }
+    const response = await send({ type: "listJobStatuses", siteId });
+    if (!Array.isArray(response.statuses)) {
+      throw new Error("The local job-history backup returned invalid job statuses.");
+    }
+    const statuses = {};
+    for (const item of response.statuses) {
+      if (!item || typeof item.jobId !== "string" || !item.jobId || item.jobId.length > 256
+        || (Object.prototype.hasOwnProperty.call(item, "opened")
+          && typeof item.opened !== "boolean")
+        || (Object.prototype.hasOwnProperty.call(item, "hidden")
+          && typeof item.hidden !== "boolean")
+        || (!Object.prototype.hasOwnProperty.call(item, "opened")
+          && !Object.prototype.hasOwnProperty.call(item, "hidden"))) {
+        throw new Error("The local job-history backup contains an invalid job status.");
+      }
+      statuses[item.jobId] = {
+        ...(Object.prototype.hasOwnProperty.call(item, "opened") ? { opened: item.opened } : {}),
+        ...(Object.prototype.hasOwnProperty.call(item, "hidden") ? { hidden: item.hidden } : {})
+      };
+    }
+    return statuses;
   }
 
   async function readArchive() {
@@ -116,7 +202,7 @@
       throw new Error("The local job-history backup returned invalid settings.");
     }
     for (const item of response.settings) {
-      if (!item || typeof item.key !== "string" || !SETTINGS_KEY_SET.has(item.key)
+      if (!item || typeof item.key !== "string" || !ARCHIVED_SETTING_KEY_SET.has(item.key)
         || !Object.prototype.hasOwnProperty.call(item, "value")) {
         throw new Error("The local job-history backup contains an invalid setting.");
       }
@@ -126,8 +212,13 @@
   }
 
   function timestamp(record) {
-    const parsed = Date.parse(String(record && (record.capturedAt || record.firstSeenAt) || ""));
-    return Number.isFinite(parsed) ? parsed : null;
+    const values = record && typeof record === "object"
+      ? [record.capturedAt, record.firstSeenAt, record.recordUpdatedAt]
+      : [];
+    const timestamps = values
+      .map((value) => Date.parse(String(value || "")))
+      .filter(Number.isFinite);
+    return timestamps.length ? Math.max(...timestamps) : null;
   }
 
   function mergeRecord(archived, local) {
@@ -150,7 +241,8 @@
       ]);
       const localValues = await global.chrome.storage.local.get([
         "records",
-        ...SETTINGS_KEYS
+        ...SETTINGS_KEYS,
+        ...STATUS_SETTING_KEYS
       ]);
       const localRecords = localValues.records || {};
       if (!localRecords || typeof localRecords !== "object" || Array.isArray(localRecords)) {
@@ -199,6 +291,79 @@
         }
         await upsertRecord(siteId, record);
       }
+      const archivedStatuses = await getAllJobStatuses();
+      const originalArchivedStatuses = Object.fromEntries(
+        Object.entries(archivedStatuses).map(([siteId, statuses]) => [
+          siteId,
+          Object.fromEntries(Object.entries(statuses).map(([jobId, status]) => [
+            jobId,
+            { ...status }
+          ]))
+        ])
+      );
+      for (const siteId of SUPPORTED_SITES) {
+        for (const statusName of ["opened", "hidden"]) {
+          const statusSettingKey = `${statusName}.${siteId}`;
+          const legacyStatuses = archivedSettings.get(statusSettingKey);
+          if (legacyStatuses && typeof legacyStatuses === "object" && !Array.isArray(legacyStatuses)) {
+            for (const [jobId, value] of Object.entries(legacyStatuses)) {
+              if (typeof value === "boolean"
+                && !Object.prototype.hasOwnProperty.call(archivedStatuses[siteId][jobId] || {}, statusName)) {
+                archivedStatuses[siteId][jobId] = {
+                  ...(archivedStatuses[siteId][jobId] || {}),
+                  [statusName]: value
+                };
+              }
+            }
+          }
+          const localStatuses = localValues[statusSettingKey];
+          if (localStatuses && typeof localStatuses === "object" && !Array.isArray(localStatuses)) {
+            for (const [jobId, value] of Object.entries(localStatuses)) {
+              if (typeof value === "boolean") {
+                archivedStatuses[siteId][jobId] = {
+                  ...(archivedStatuses[siteId][jobId] || {}),
+                  [statusName]: value
+                };
+              }
+            }
+          }
+        }
+      }
+      for (const siteId of SUPPORTED_SITES) {
+        const statusUpdates = [];
+        for (const [jobId, status] of Object.entries(archivedStatuses[siteId])) {
+          const update = { jobId };
+          for (const statusName of ["opened", "hidden"]) {
+            if (typeof status[statusName] === "boolean"
+              && originalArchivedStatuses[siteId][jobId]?.[statusName] !== status[statusName]) {
+              update[statusName] = status[statusName];
+            }
+          }
+          if (Object.keys(update).length > 1) {
+            statusUpdates.push(update);
+          }
+        }
+        for (let offset = 0; offset < statusUpdates.length; offset += 1000) {
+          await updateJobStatuses(siteId, statusUpdates.slice(offset, offset + 1000));
+        }
+      }
+      const restoredStatuses = {};
+      for (const siteId of SUPPORTED_SITES) {
+        const opened = {};
+        const hidden = {};
+        for (const [jobId, status] of Object.entries(archivedStatuses[siteId])) {
+          if (typeof status.opened === "boolean") {
+            opened[jobId] = status.opened;
+          }
+          if (typeof status.hidden === "boolean") {
+            hidden[jobId] = status.hidden;
+          }
+        }
+        restoredStatuses[`opened.${siteId}`] = opened;
+        restoredStatuses[`hidden.${siteId}`] = hidden;
+      }
+      await global.chrome.storage.local.set(restoredStatuses);
+
       const settingsToRestore = {};
       const settingsToArchive = [];
       for (const key of SETTINGS_KEYS) {
@@ -221,7 +386,9 @@
         restored: archivedRecords.size,
         synchronized: archiveWinners.size,
         restoredSettings: Object.keys(settingsToRestore).length,
-        synchronizedSettings: settingsToArchive.length
+        synchronizedSettings: settingsToArchive.length,
+        restoredStatuses: Object.values(archivedStatuses)
+          .reduce((count, statuses) => count + Object.keys(statuses).length, 0)
       };
     })();
     try {
@@ -232,9 +399,20 @@
     }
   }
 
+  async function getAllJobStatuses() {
+    const statuses = {};
+    for (const siteId of SUPPORTED_SITES) {
+      statuses[siteId] = await getJobStatuses(siteId);
+    }
+    return statuses;
+  }
+
   global.JobCollectorNativeBackup = Object.freeze({
     upsertRecord,
     upsertSetting,
+    updateJobStatus,
+    updateJobStatuses,
+    getJobStatuses,
     isBackupSettingKey: (key) => SETTINGS_KEY_SET.has(key),
     restoreArchive
   });

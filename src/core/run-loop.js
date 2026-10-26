@@ -37,12 +37,25 @@
   async function run(adapter, context) {
     let pageNumber = context.pageNumber;
     let resumePagination = context.resumePagination;
-    while (pageNumber <= adapter.limits.maxPages) {
+    const getRunCapturedCount = async (stats) => {
+      return typeof context.readRunCapturedCount === "function"
+        ? context.readRunCapturedCount()
+        : stats.capturedCount;
+    };
+    const startPageNumber = Number.isInteger(context.startPageNumber)
+      && context.startPageNumber > 0
+      ? context.startPageNumber
+      : 1;
+    const pagesProcessed = (currentPage) => Math.max(1, currentPage - startPageNumber + 1);
+    const reachedPageLimit = (currentPage) => (
+      pagesProcessed(currentPage) >= adapter.limits.maxPages
+    );
+    while (pagesProcessed(pageNumber) <= adapter.limits.maxPages) {
       context.setPage(pageNumber);
       await context.ensureVisible();
       context.checkBlock();
       let stats = await context.readStats();
-      if (stats.capturedCount >= adapter.limits.maxJobsPerRun) {
+      if (await getRunCapturedCount(stats) >= adapter.limits.maxJobsPerRun) {
         await context.finish(
           pageNumber,
           stats,
@@ -50,7 +63,7 @@
         );
         return { pageNumber, navigation: "none" };
       }
-      if (pageNumber >= adapter.limits.maxPages && resumePagination) {
+      if (reachedPageLimit(pageNumber) && resumePagination) {
         await context.finish(
           pageNumber,
           stats,
@@ -93,7 +106,7 @@
       pageNumber = adapter.getCurrentPage(context.doc, context.url) || pageNumber;
       context.setPage(pageNumber);
       stats = await context.readStats();
-      if (stats.capturedCount >= adapter.limits.maxJobsPerRun) {
+      if (await getRunCapturedCount(stats) >= adapter.limits.maxJobsPerRun) {
         await context.finish(
           pageNumber,
           stats,
@@ -109,7 +122,7 @@
         );
         return { pageNumber, navigation: "none" };
       }
-      if (pageNumber >= adapter.limits.maxPages) {
+      if (reachedPageLimit(pageNumber)) {
         await context.finish(
           pageNumber,
           stats,
@@ -140,7 +153,7 @@
     }
     const stats = await context.readStats();
     await context.finish(
-      adapter.limits.maxPages,
+      pageNumber,
       stats,
       `Stopped at the configured maximum of ${adapter.limits.maxPages} results pages.`
     );

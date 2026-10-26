@@ -4,7 +4,7 @@
   global.JobCollectorNaukriConfig = Object.freeze({
     maxPages: 25,
     maxJobsPerRun: 500,
-    maxJobsPerDay: 2000,
+    maxJobsPerDay: 5000,
     pageChangeDelayMs: Object.freeze({ min: 2500, max: 5000 }),
     resumeDelayMs: Object.freeze({ min: 2000, max: 4000 }),
     microPauseMs: Object.freeze({ min: 8000, max: 12000 }),

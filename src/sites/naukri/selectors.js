@@ -168,6 +168,13 @@
     return queryAll(doc, SELECTORS.cards).filter((card) => !isExcludedCard(card));
   }
 
+  function getJobCardForElement(doc, element) {
+    return getJobCards(doc).find((card) => (
+      card === element
+      || (typeof card.contains === "function" && card.contains(element))
+    )) || null;
+  }
+
   function getNextPageLink(doc) {
     return queryAll(doc, SELECTORS.paginationLinks).find((control) => {
       const description = [
@@ -205,6 +212,7 @@
     getAttributeText,
     getLocationRaw,
     getJobCards,
+    getJobCardForElement,
     getNextPageLink,
     getSelectedPage
   });

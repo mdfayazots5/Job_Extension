@@ -1,3 +1,4 @@
 .vs/
 /job-history-backup.jsonl
+/job-status-backup.jsonl
 /native-host/publish/

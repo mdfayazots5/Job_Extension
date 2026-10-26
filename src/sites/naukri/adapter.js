@@ -79,6 +79,47 @@
     }
   }
 
+  function isExternalApplyRedirect(value) {
+    const cleaned = cleanApplyRedirectUrl(value);
+    if (!cleaned) {
+      return false;
+    }
+    const hostname = new URL(cleaned).hostname.toLowerCase();
+    return hostname !== "naukri.com" && !hostname.endsWith(".naukri.com");
+  }
+
+  function classifyApplyType(record) {
+    const externalRedirect = isExternalApplyRedirect(record.applyRedirectUrl);
+    if (record.companyApplyJob === true) {
+      return "Company Apply";
+    }
+    if (record.companyApplyJob === false) {
+      if (externalRedirect) {
+        return "Unclassified";
+      }
+      if (typeof record.questionnaireIdPresent === "boolean") {
+        return "Easy Apply";
+      }
+      return "Unclassified";
+    }
+    if (externalRedirect) {
+      return "Company Apply";
+    }
+    if (typeof record.questionnaireIdPresent === "boolean") {
+      return "Easy Apply";
+    }
+    if (
+      record.applyType === "Easy Apply"
+      || record.applyType === "Direct Apply"
+    ) {
+      return "Easy Apply";
+    }
+    if (record.applyType === "Company Apply") {
+      return "Company Apply";
+    }
+    return "Unclassified";
+  }
+
   function cleanLogoSource(src) {
     const value = String(src || "").trim();
     if (!value || /^data:/i.test(value)) {
@@ -202,11 +243,10 @@
       if (!/^\d+$/.test(jobId)) {
         continue;
       }
-      if (typeof job.companyApplyJob !== "boolean") {
-        throw new Error(`Naukri API response is missing the companyApplyJob flag for job ${jobId}.`);
-      }
       applicationTypes[jobId] = {
-        companyApplyJob: job.companyApplyJob,
+        companyApplyJob: typeof job.companyApplyJob === "boolean"
+          ? job.companyApplyJob
+          : null,
         questionnaireIdPresent: typeof job.questionnaireIdPresent === "boolean"
           ? job.questionnaireIdPresent
           : null,
@@ -214,26 +254,26 @@
       };
     }
     if (Object.keys(applicationTypes).length === 0) {
-      throw new Error("Naukri search API response contains no classifiable job records.");
+      throw new Error("Naukri search API response contains no job records with valid IDs.");
     }
     return applicationTypes;
   }
 
   function detectBlock(doc, url) {
-    const pathname = String(url && url.pathname || "").toLowerCase();
-    if (/\/(?:login|mnjuser\/login)(?:\/|$)/.test(pathname)) {
-      return "Naukri redirected to a login page.";
-    }
-    const text = `${doc && doc.title || ""}\n${doc && doc.body && doc.body.innerText || ""}`;
+    const title = String(doc && doc.title || "");
+    const bodyText = String(doc && doc.body && doc.body.innerText || "");
     const blockPatterns = [
       /access denied/i,
-      /reference\s*#/i,
-      /captcha/i,
       /verify you are human/i,
       /unusual traffic/i
     ];
-    const match = blockPatterns.find((pattern) => pattern.test(text));
-    return match ? "Naukri access block detected in page content." : null;
+    const captchaChallenge = /^\s*captcha(?:\s+(?:verification|challenge))?\s*$/i.test(title)
+      || /\bcaptcha\b.{0,80}\b(?:required|verification|challenge|verify|complete|enter)\b/i.test(bodyText)
+      || /\b(?:required|verification|challenge|verify|complete|enter)\b.{0,80}\bcaptcha\b/i.test(bodyText);
+    const isBlocked = blockPatterns.some((pattern) => (
+      pattern.test(title) || pattern.test(bodyText)
+    )) || captchaChallenge;
+    return isBlocked ? "Naukri access block detected in page content." : null;
   }
 
   function getCurrentPage(doc, url) {
@@ -286,15 +326,13 @@
     }
     const normalized = { ...raw, siteId: "naukri", jobId };
     normalized.applyRedirectUrl = cleanApplyRedirectUrl(raw.applyRedirectUrl);
-    if (normalized.companyApplyJob === true) {
-      normalized.applyType = "Company Apply";
-    } else if (normalized.questionnaireIdPresent === false) {
-      normalized.applyType = "Direct Apply";
-    } else if (normalized.questionnaireIdPresent === true) {
-      normalized.applyType = "Easy Apply";
-    } else if (typeof normalized.companyApplyJob === "boolean") {
-      normalized.applyType = "Easy Apply";
+    if (
+      typeof normalized.companyApplyJob !== "boolean"
+      && isExternalApplyRedirect(normalized.applyRedirectUrl)
+    ) {
+      normalized.companyApplyJob = true;
     }
+    normalized.applyType = classifyApplyType(normalized);
     return normalized;
   }
 
@@ -341,7 +379,6 @@
     ui: Object.freeze({
       tabs: Object.freeze([
         Object.freeze({ id: "Easy Apply", label: "Easy Apply" }),
-        Object.freeze({ id: "Direct Apply", label: "Direct Apply" }),
         Object.freeze({ id: "Company Apply", label: "Company Apply" })
       ]),
       columns: Object.freeze([
@@ -358,6 +395,7 @@
         if (
           record.companyApplyJob === true
           || record.applyType === "Company Apply"
+          || isExternalApplyRedirect(record.applyRedirectUrl)
         ) {
           return cleanApplyRedirectUrl(record.applyRedirectUrl) || record.url;
         }
@@ -365,13 +403,7 @@
       },
       accent: "#275DF5",
       tabFor(record) {
-        if (record.companyApplyJob === true || record.applyType === "Company Apply") {
-          return "Company Apply";
-        }
-        if (typeof record.questionnaireIdPresent === "boolean") {
-          return record.questionnaireIdPresent ? "Easy Apply" : "Direct Apply";
-        }
-        return record.applyType === "Direct Apply" ? "Direct Apply" : "Easy Apply";
+        return classifyApplyType(record);
       }
     })
   });

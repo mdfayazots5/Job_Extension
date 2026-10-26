@@ -4,7 +4,7 @@
   global.JobCollectorIndeedConfig = Object.freeze({
     maxPages: 50,
     maxJobsPerRun: 500,
-    maxJobsPerDay: 2000,
+    maxJobsPerDay: 5000,
     scrollDelayMs: Object.freeze({ min: 1800, max: 4000 }),
     pageDelayMs: Object.freeze({ min: 4000, max: 8000 }),
     resumeDelayMs: Object.freeze({ min: 2000, max: 5000 }),

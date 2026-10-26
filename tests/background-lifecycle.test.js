@@ -22,6 +22,7 @@ function eventHook() {
 async function run() {
   const store = {};
   const archivedSettings = new Map();
+  const archivedStatuses = new Map();
   const getLinkedInJobs = () => Object.fromEntries(
     Object.entries(store.records || {})
       .filter(([key]) => key.startsWith("linkedin:"))
@@ -69,7 +70,7 @@ async function run() {
     active: true
   }];
   const storageChanged = eventHook();
-  const injected = { ready: false };
+  const injected = { ready: false, activeRunId: null };
   let nextTabId = 100;
   const createdTabs = [];
   const chrome = {
@@ -84,6 +85,26 @@ async function run() {
             ok: true,
             settings: [...archivedSettings.entries()].map(([key, value]) => ({ key, value }))
           };
+        }
+        if (message.type === "listJobStatuses") {
+          return {
+            ok: true,
+            statuses: [...archivedStatuses.entries()]
+              .filter(([key]) => key.startsWith(`${message.siteId}:`))
+              .map(([key, status]) => ({
+                jobId: key.slice(message.siteId.length + 1),
+                ...status
+              }))
+          };
+        }
+        if (message.type === "updateJobStatuses") {
+          for (const update of message.updates) {
+            const key = `${message.siteId}:${update.jobId}`;
+            archivedStatuses.set(key, {
+              ...(archivedStatuses.get(key) || {}),
+              [update.statusName]: update.value
+            });
+          }
         }
         if (message.type === "upsertSetting") {
           archivedSettings.set(message.key, message.value);
@@ -138,7 +159,16 @@ async function run() {
       },
       async sendMessage(_tabId, message) {
         if (message.type === "PING") {
-          return { ok: injected.ready };
+          return {
+            ok: injected.ready,
+            activeRunId: injected.activeRunId
+          };
+        }
+        if (message.type === "START_RUN") {
+          injected.activeRunId = message.runId;
+        }
+        if (message.type === "STOP_RUN") {
+          injected.activeRunId = null;
         }
         return { ok: true };
       },
@@ -183,17 +213,29 @@ async function run() {
   await chrome.storage.local.set({
     "linkedin:skipTitles": ["Exact title"],
     "ui.linkedin.filters": { locations: ["Hyderabad"], experienceYears: [] },
-    "hidden.linkedin": { "42": true }
+    "hidden.linkedin": { "42": true },
+    "opened.linkedin": { "42": true }
   });
+  archivedStatuses.set("linkedin:42", { opened: false });
   await vm.runInContext("durableSettingsQueue", context);
   assert.deepEqual(archivedSettings.get("linkedin:skipTitles"), ["Exact title"]);
   assert.deepEqual(archivedSettings.get("ui.linkedin.filters"), {
     locations: ["Hyderabad"],
     experienceYears: []
   });
-  assert.deepEqual(archivedSettings.get("hidden.linkedin"), { "42": true });
+  assert.equal(archivedSettings.has("hidden.linkedin"), false);
+  await vm.runInContext(
+    `synchronizeJobStatuses({ siteId: "linkedin", update: { jobId: "42", hidden: true } })`,
+    context
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(archivedStatuses.get("linkedin:42"))),
+    { hidden: true, opened: true }
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(store["opened.linkedin"])), { "42": true });
+  assert.deepEqual(JSON.parse(JSON.stringify(store["hidden.linkedin"])), { "42": true });
   assert.equal(vm.runInContext("JobCollectorConfig.maxJobsPerRun", context), 500);
-  assert.equal(vm.runInContext("JobCollectorConfig.maxJobsPerDay", context), 2000);
+  assert.equal(vm.runInContext("JobCollectorConfig.maxJobsPerDay", context), 5000);
   assert.equal(vm.runInContext("JobCollectorConfig.maxRunsPerDay", context), undefined);
 
   await chrome.storage.local.set({
@@ -208,13 +250,31 @@ async function run() {
   await vm.runInContext("handleStart()", context);
   assert.equal(store.records["linkedin:10"].jobId, "10");
   assert.equal(store["opened.linkedin"]["10"], true);
-  assert.equal(store.collectorDiagnostics.length, 0);
+  assert.deepEqual(
+    Array.from(store.collectorDiagnostics, (entry) => entry.event),
+    ["run-start-requested", "run-start-dispatched", "run-start-acknowledged"]
+  );
   assert.equal(store.collectorState.state, "RUNNING");
   assert.equal(store.collectorState.capturedCount, 0);
   assert.equal(store.resultsSelectedTab, "Company Site");
   assert.equal(store["cooldown.indeed"].until > Date.now(), true);
   await vm.runInContext("progressQueue", context);
   await assert.rejects(vm.runInContext("handleStart()", context), /already active/);
+
+  const originalStorageSet = chrome.storage.local.set;
+  chrome.storage.local.set = async (updates) => {
+    if (Object.prototype.hasOwnProperty.call(updates, "diagnostics.linkedin")) {
+      throw new Error("simulated diagnostic storage failure");
+    }
+    return originalStorageSet(updates);
+  };
+  await assert.doesNotReject(
+    vm.runInContext(
+      `appendDiagnostic("${store.collectorState.runId}", "run-start-dispatched")`,
+      context
+    )
+  );
+  chrome.storage.local.set = originalStorageSet;
 
   store.jobsById = {
     "101": { jobId: "101", applyType: "Easy Apply" }
@@ -349,7 +409,7 @@ async function run() {
   store.collectorState = { ...store.collectorState, state: "DONE", runId: "budget-run" };
   store.collectorBudget = {
     dayKey: today,
-    jobsToday: 2000,
+    jobsToday: 5000,
     seenJobIds: []
   };
   await assert.rejects(
@@ -403,7 +463,7 @@ async function run() {
   store.collectorBudget = {
     ...store.collectorBudget,
     dayKey: vm.runInContext("localDayKey(new Date(Date.now() - 86400000))", context),
-    jobsToday: 2000,
+    jobsToday: 5000,
     runsToday: 99
   };
   const rolledBudget = await vm.runInContext("readBudget()", context);
@@ -532,6 +592,29 @@ async function run() {
 
   store.collectorState = {
     ...vm.runInContext("defaultRunState()", context),
+    runId: "orphaned-run",
+    state: "RUNNING",
+    tabId: 5,
+    lastActionAt: new Date().toISOString()
+  };
+  await vm.runInContext("recoverStaleLinkedInRun()", context);
+  assert.equal(store.collectorState.state, "STOPPED");
+  assert.equal(store.collectorState.terminalReason, "interrupted");
+
+  store.collectorState = {
+    ...vm.runInContext("defaultRunState()", context),
+    runId: "live-run",
+    state: "RUNNING",
+    tabId: 5,
+    lastActionAt: new Date().toISOString()
+  };
+  injected.activeRunId = "live-run";
+  await vm.runInContext("recoverStaleLinkedInRun()", context);
+  assert.equal(store.collectorState.state, "RUNNING");
+  injected.activeRunId = null;
+
+  store.collectorState = {
+    ...vm.runInContext("defaultRunState()", context),
     runId: "closed-tab-run",
     state: "RUNNING",
     tabId: 5,
@@ -549,7 +632,7 @@ async function run() {
   store.jobsById = {};
   store.collectorBudget = {
     ...store.collectorBudget,
-    jobsToday: 1999,
+    jobsToday: 4999,
     seenJobIds: [],
   };
   const dailyCapCapture = await vm.runInContext(
@@ -559,7 +642,7 @@ async function run() {
   assert.equal(dailyCapCapture.limitReached, true);
   assert.equal(store.collectorState.state, "DONE");
   assert.equal(store.collectorState.terminalReason, "limit");
-  assert.equal(store.collectorBudget.jobsToday, 2000);
+  assert.equal(store.collectorBudget.jobsToday, 5000);
 
   vm.runInContext(
     "globalThis.JobCollectorConfig = Object.freeze({ ...globalThis.JobCollectorConfig, maxJobsPerRun: 1 })",

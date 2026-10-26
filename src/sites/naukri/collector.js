@@ -161,7 +161,7 @@
       throw new NaukriBlockError(block);
     }
     if (!adapter.matchesUrl(currentUrl())) {
-      throw new NaukriBlockError("The current page is not a Naukri jobs search-results page.");
+      throw new Error("The current page is not a Naukri jobs search-results page.");
     }
   }
 
@@ -174,7 +174,7 @@
     await checkRunning(runId);
     await checkPageBlock();
     if (selectors.getJobCards(document).length === 0) {
-      throw new NaukriBlockError("Naukri search page returned 0 job cards on two consecutive checks.");
+      throw new Error("Naukri search page returned 0 job cards on two consecutive checks.");
     }
   }
 
@@ -186,8 +186,9 @@
   async function readApplicationDetails(runId, pageNumber, records) {
     const applicationDetails = {};
     const missingRecords = [];
+    const recordsById = new Map(records.map((record) => [record.jobId, record]));
     for (const record of records) {
-      if (typeof record.companyApplyJob === "boolean") {
+      if (adapter.ui.tabFor(record) !== "Unclassified") {
         applicationDetails[record.jobId] = {
           companyApplyJob: record.companyApplyJob,
           questionnaireIdPresent: record.questionnaireIdPresent,
@@ -200,18 +201,17 @@
     const observedResponse = globalThis.JobCollectorNaukriApiResponses
       && globalThis.JobCollectorNaukriApiResponses[pageNumber];
     if (!observedResponse) {
-      if (!missingRecords.length) {
-        await logFlow(runId, "application-api-matched", {
+      await logFlow(
+        runId,
+        missingRecords.length ? "application-api-unavailable" : "application-api-matched",
+        {
           pageNumber,
-          matchedCount: records.length,
+          matchedCount: records.length - missingRecords.length,
+          missingCount: missingRecords.length,
           source: "result-cards"
-        });
-        return applicationDetails;
-      }
-      throw new Error(
-        `Could not capture Naukri's page-loaded search response for page ${pageNumber}. ` +
-        "Reload the search page and try again."
+        }
       );
+      return applicationDetails;
     }
     await logFlow(runId, "application-api-response", {
       pageNumber,
@@ -236,16 +236,32 @@
         `Naukri's page-loaded search request returned HTTP ${observedResponse.status} for page ${pageNumber}.`
       );
     }
-    Object.assign(applicationDetails, adapter.parseApplicationDetails(observedResponse));
+    const apiDetails = adapter.parseApplicationDetails(observedResponse);
+    for (const [jobId, details] of Object.entries(apiDetails)) {
+      const card = recordsById.get(jobId);
+      applicationDetails[jobId] = {
+        companyApplyJob: typeof details.companyApplyJob === "boolean"
+          ? details.companyApplyJob
+          : card && card.companyApplyJob,
+        questionnaireIdPresent: typeof details.questionnaireIdPresent === "boolean"
+          ? details.questionnaireIdPresent
+          : card && card.questionnaireIdPresent,
+        applyRedirectUrl: details.applyRedirectUrl || (card && card.applyRedirectUrl) || null
+      };
+    }
     const missingIds = missingRecords
       .map((record) => record.jobId)
       .filter((jobId) => !Object.prototype.hasOwnProperty.call(applicationDetails, jobId));
     if (missingIds.length) {
-      throw new Error(`Naukri search API did not return application type for ${missingIds.length} visible job${missingIds.length === 1 ? "" : "s"} on page ${pageNumber}.`);
+      throw new Error(`Naukri search API did not return ${missingIds.length} visible job${missingIds.length === 1 ? "" : "s"} on page ${pageNumber}.`);
     }
+    const unclassifiedCount = records.filter((record) => (
+      adapter.ui.tabFor({ ...record, ...applicationDetails[record.jobId] }) === "Unclassified"
+    )).length;
     await logFlow(runId, "application-api-matched", {
       pageNumber,
-      matchedCount: records.length
+      matchedCount: records.length - unclassifiedCount,
+      unclassifiedCount
     });
     return applicationDetails;
   }
@@ -263,6 +279,43 @@
     }
   }
 
+  function markClickedJobOpened(event) {
+    if (event.defaultPrevented) {
+      return;
+    }
+    const clickedElement = event.target && event.target.nodeType === 1
+      ? event.target
+      : event.target && event.target.parentElement;
+    if (!clickedElement || typeof clickedElement.closest !== "function") {
+      return;
+    }
+    const link = clickedElement.closest("a");
+    if (!link) {
+      return;
+    }
+    const card = selectors.getJobCardForElement(document, link);
+    if (!card || selectors.query(card, selectors.SELECTORS.title) !== link) {
+      return;
+    }
+    const jobId = String(card.getAttribute("data-job-id") || "").trim();
+    if (!/^\d+$/.test(jobId)) {
+      return;
+    }
+    chrome.runtime.sendMessage({
+      type: "SYNC_JOB_STATUSES",
+      siteId: adapter.id,
+      updates: [{ jobId, opened: true }]
+    }).then((response) => {
+      if (!response || response.ok !== true) {
+        throw new Error(response && response.error
+          ? response.error
+          : "The service worker did not acknowledge the opened status.");
+      }
+    }).catch((error) => {
+      console.warn("[Naukri Jobs Collector] Could not save opened status", error);
+    });
+  }
+
   async function runPage(runId, runState) {
     if (activeRunId && activeRunId !== runId) {
       return;
@@ -272,9 +325,15 @@
     const pageNumber = Number.isInteger(runState.pageNumber) && runState.pageNumber > 0
       ? runState.pageNumber
       : 1;
+    const startPageNumber = Number.isInteger(runState.startPageNumber)
+      && runState.startPageNumber > 0
+      ? runState.startPageNumber
+      : pageNumber;
     const pageUrl = currentUrl();
     await logFlow(runId, "page-run-start", {
       pageNumber,
+      startPageNumber,
+      pagesProcessed: Math.max(1, pageNumber - startPageNumber + 1),
       cardCount: selectors.getJobCards(document).length,
       navigationPending: Boolean(runState.navigationPending)
     });
@@ -284,6 +343,7 @@
       url: pageUrl,
       runId,
       pageNumber,
+      startPageNumber,
       logFlow: (event, details) => logFlow(runId, event, details),
       setPage() {},
       setNextPage() {},
@@ -330,7 +390,11 @@
             continue;
           }
           currentIds.add(record.jobId);
-          const details = applicationDetails[record.jobId];
+          const details = applicationDetails[record.jobId] || {
+            companyApplyJob: record.companyApplyJob,
+            questionnaireIdPresent: record.questionnaireIdPresent,
+            applyRedirectUrl: record.applyRedirectUrl
+          };
           const normalized = adapter.normalize({
             ...record,
             companyApplyJob: details.companyApplyJob,
@@ -527,6 +591,8 @@
       }
     }
   }
+
+  document.addEventListener("click", markClickedJobOpened, true);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") {

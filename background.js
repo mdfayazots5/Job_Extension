@@ -274,7 +274,7 @@ async function writeNotice(text, kind) {
   });
 }
 
-function appendDiagnostic(runId, event, details = {}) {
+function appendDiagnostic(runId, event, details = {}, component = "background") {
   const operation = diagnosticQueue.then(async () => {
     const values = await chrome.storage.local.get([
       STORAGE_KEYS.runState,
@@ -331,6 +331,10 @@ function appendDiagnostic(runId, event, details = {}) {
       "missing-company-name"
     ]);
     const safeEvents = new Set([
+      "run-start-requested",
+      "run-start-dispatched",
+      "run-start-acknowledged",
+      "run-start-failed",
       "run-start",
       "run-paused",
       "run-resumed",
@@ -416,15 +420,55 @@ function appendDiagnostic(runId, event, details = {}) {
         at: new Date().toISOString(),
         runId,
         siteId: SITE_ID,
+        flow: true,
+        component: component === "content-script" ? component : "background",
         event: safeEvents.has(event) ? event : "unknown-event",
         details: safeDetails
       }).filter((entry) => Number.isFinite(Date.parse(entry && entry.at)) && Date.parse(entry.at) >= cutoff).slice(-200)
     });
   });
   diagnosticQueue = operation.catch((error) => {
-    debugLog("Could not persist diagnostic event", errorMessage(error));
+    console.error("[LinkedIn Jobs Collector] Could not persist diagnostic event", errorMessage(error));
   });
-  return operation;
+  return diagnosticQueue;
+}
+
+function appendFlowDiagnostic(event, details = {}) {
+  const operation = diagnosticQueue.then(async () => {
+    const values = await chrome.storage.local.get([
+      STORAGE_KEYS.flowLogging,
+      STORAGE_KEYS.diagnostics
+    ]);
+    if (values[STORAGE_KEYS.flowLogging] !== true) {
+      return;
+    }
+    const safeDetails = {};
+    if (typeof details.error === "string") {
+      safeDetails.error = details.error
+        .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+        .replace(/\b(token|csrf|cookie|authorization)\b\s*[:=]\s*\S+/gi, "$1=[redacted]")
+        .slice(0, 240);
+    }
+    if (typeof details.ok === "boolean") {
+      safeDetails.ok = details.ok;
+    }
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.diagnostics]: (Array.isArray(values[STORAGE_KEYS.diagnostics])
+        ? values[STORAGE_KEYS.diagnostics]
+        : []).concat({
+        at: new Date().toISOString(),
+        flow: true,
+        component: "background",
+        event,
+        siteId: SITE_ID,
+        ...safeDetails
+      }).slice(-200)
+    });
+  });
+  diagnosticQueue = operation.catch((error) => {
+    console.error("[LinkedIn Jobs Collector] Could not persist flow diagnostic", errorMessage(error));
+  });
+  return diagnosticQueue;
 }
 
 async function openResultsForRun(state) {
@@ -758,7 +802,6 @@ async function startRun(siteId = SITE_ID) {
   });
   await writeJobs(await readJobs(), {
     [STORAGE_KEYS.budget]: nextBudget,
-    [STORAGE_KEYS.diagnostics]: [],
     [STORAGE_KEYS.runState]: running,
     [STORAGE_KEYS.progress]: {
       runId,
@@ -772,8 +815,16 @@ async function startRun(siteId = SITE_ID) {
     }
   });
   await writeNotice("Collecting the current results page.", "info");
+  await appendDiagnostic(runId, "run-start-requested", {
+    route: new URL(tab.url).pathname,
+    pageNumber: 1
+  });
 
   try {
+    await appendDiagnostic(runId, "run-start-dispatched", {
+      route: new URL(tab.url).pathname,
+      pageNumber: 1
+    });
     const response = await sendToJobsTab(tab.id, {
       type: "START_RUN",
       siteId,
@@ -784,7 +835,16 @@ async function startRun(siteId = SITE_ID) {
         ? response.error
         : "The content script did not acknowledge the run.");
     }
+    await appendDiagnostic(runId, "run-start-acknowledged", {
+      route: new URL(tab.url).pathname,
+      pageNumber: 1
+    });
   } catch (error) {
+    await appendDiagnostic(runId, "run-start-failed", {
+      route: new URL(tab.url).pathname,
+      pageNumber: 1,
+      message: errorMessage(error)
+    });
     await persistRunFailure(error);
     throw error;
   }
@@ -1073,7 +1133,7 @@ async function handleMessage(message, sender) {
     case "TOUCH_SEEN_JOBS":
       return touchSeenJobs(message);
     case "DIAGNOSTIC_EVENT":
-      await appendDiagnostic(message.runId, message.event, message.details);
+      await appendDiagnostic(message.runId, message.event, message.details, message.component);
       return { ok: true };
     case "PAUSE_RUN":
       return pauseRun(message.runId);
@@ -1086,17 +1146,142 @@ async function handleMessage(message, sender) {
   }
 }
 
+async function synchronizeJobStatuses(message) {
+  const siteId = message.siteId;
+  if (!globalThis.JobCollectorStorage.siteIds.includes(siteId)) {
+    throw new Error("A supported site ID is required to synchronize job statuses.");
+  }
+  await initializeStorage();
+  const updates = message.update === undefined
+    ? message.updates
+    : [message.update];
+  const keys = globalThis.JobCollectorStorage.keysForSite(siteId);
+  const localValues = await chrome.storage.local.get([keys.openedJobs, keys.hiddenJobs]);
+  const openedJobs = localValues[keys.openedJobs]
+    && typeof localValues[keys.openedJobs] === "object"
+    && !Array.isArray(localValues[keys.openedJobs])
+    ? { ...localValues[keys.openedJobs] }
+    : {};
+  const hiddenJobs = localValues[keys.hiddenJobs]
+    && typeof localValues[keys.hiddenJobs] === "object"
+    && !Array.isArray(localValues[keys.hiddenJobs])
+    ? { ...localValues[keys.hiddenJobs] }
+    : {};
+  if (updates !== undefined) {
+    if (!Array.isArray(updates) || updates.length < 1 || updates.length > 1000
+      || updates.some((update) => (
+        !update
+        || typeof update !== "object"
+        || Array.isArray(update)
+        || typeof update.jobId !== "string"
+        || !update.jobId
+        || !["opened", "hidden"].some((statusName) => (
+          Object.prototype.hasOwnProperty.call(update, statusName)
+        ))
+      ))) {
+      throw new Error("A bounded list of valid job status updates is required.");
+    }
+    for (const update of updates) {
+      for (const statusName of ["opened", "hidden"]) {
+        if (Object.prototype.hasOwnProperty.call(update, statusName)) {
+          (statusName === "opened" ? openedJobs : hiddenJobs)[update.jobId] = update[statusName];
+        }
+      }
+    }
+    await chrome.storage.local.set({
+      [keys.openedJobs]: openedJobs,
+      [keys.hiddenJobs]: hiddenJobs
+    });
+  }
+
+  const sharedStatuses = await globalThis.JobCollectorNativeBackup.getJobStatuses(siteId);
+  const mergedOpenedJobs = {};
+  const mergedHiddenJobs = {};
+  for (const [jobId, status] of Object.entries(sharedStatuses)) {
+    if (typeof status.opened === "boolean") {
+      mergedOpenedJobs[jobId] = status.opened;
+    }
+    if (typeof status.hidden === "boolean") {
+      mergedHiddenJobs[jobId] = status.hidden;
+    }
+  }
+  const archiveUpdates = [];
+  for (const [statusName, localStatuses, mergedStatuses] of [
+    ["opened", openedJobs, mergedOpenedJobs],
+    ["hidden", hiddenJobs, mergedHiddenJobs]
+  ]) {
+    for (const [jobId, value] of Object.entries(localStatuses)) {
+      if (typeof value !== "boolean") {
+        continue;
+      }
+      mergedStatuses[jobId] = value;
+      const sharedStatus = sharedStatuses[jobId];
+      if (!sharedStatus || sharedStatus[statusName] !== value) {
+        archiveUpdates.push({ jobId, [statusName]: value });
+      }
+    }
+  }
+  for (let offset = 0; offset < archiveUpdates.length; offset += 1000) {
+    await globalThis.JobCollectorNativeBackup.updateJobStatuses(
+      siteId,
+      archiveUpdates.slice(offset, offset + 1000)
+    );
+  }
+  const changes = {};
+  if (JSON.stringify(localValues[keys.openedJobs] || {}) !== JSON.stringify(mergedOpenedJobs)) {
+    changes[keys.openedJobs] = mergedOpenedJobs;
+  }
+  if (JSON.stringify(localValues[keys.hiddenJobs] || {}) !== JSON.stringify(mergedHiddenJobs)) {
+    changes[keys.hiddenJobs] = mergedHiddenJobs;
+  }
+  if (Object.keys(changes).length > 0) {
+    await chrome.storage.local.set(changes);
+  }
+  return { ok: true, openedJobs: mergedOpenedJobs, hiddenJobs: mergedHiddenJobs };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === "SYNC_JOB_STATUSES") {
+    synchronizeJobStatuses(message)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
+    return true;
+  }
   const isNaukriMessage = message && message.siteId === "naukri";
   const isIndeedMessage = message && message.siteId === "indeed";
+  const isLinkedInStart = message && message.type === "START_RUN" && message.siteId === SITE_ID;
+  if (isLinkedInStart) {
+    void appendFlowDiagnostic("start_message_received");
+  }
   const operation = isNaukriMessage
     ? globalThis.JobCollectorNaukriBackground.handleMessage(message, sender)
     : isIndeedMessage
       ? globalThis.JobCollectorIndeedBackground.handleMessage(message, sender)
-      : initializeStorage().then(() => handleMessage(message, sender));
+      : (isLinkedInStart
+        ? appendFlowDiagnostic("background_initialization_started")
+        : Promise.resolve())
+        .then(() => initializeStorage())
+        .then(() => isLinkedInStart
+          ? appendFlowDiagnostic("background_initialization_completed")
+          : undefined)
+        .then(() => isLinkedInStart
+          ? appendFlowDiagnostic("background_start_handler_entered")
+          : undefined)
+        .then(() => handleMessage(message, sender));
   operation
-    .then(sendResponse)
+    .then((response) => {
+      if (isLinkedInStart) {
+        void appendFlowDiagnostic("background_start_handler_completed", { ok: true });
+      }
+      sendResponse(response);
+    })
     .catch(async (error) => {
+      if (isLinkedInStart) {
+        void appendFlowDiagnostic("background_start_handler_failed", {
+          ok: false,
+          error: errorMessage(error)
+        });
+      }
       if (isNaukriMessage) {
         if (globalThis.JobCollectorNaukriConfig.debug) {
           console.error("[Naukri Jobs Collector] Action failed", errorMessage(error));
@@ -1375,18 +1560,39 @@ async function recoverStaleLinkedInRun() {
     return;
   }
   const lastAction = Date.parse(state.lastActionAt || state.updatedAt || "");
-  if (Number.isFinite(lastAction) && Date.now() - lastAction <= 15 * 60 * 1000) {
-    return;
+  const stale = !Number.isFinite(lastAction) || Date.now() - lastAction > 15 * 60 * 1000;
+  if (!stale) {
+    let contentRunId = null;
+    if (Number.isInteger(state.tabId)) {
+      try {
+        const response = await chrome.tabs.sendMessage(state.tabId, {
+          type: "PING",
+          siteId: SITE_ID
+        });
+        if (response && response.ok === true) {
+          contentRunId = response.activeRunId;
+        }
+      } catch (_error) {
+        contentRunId = null;
+      }
+    }
+    if (contentRunId === state.runId) {
+      return;
+    }
   }
   const stopped = transitionRunState(state, "STOPPED", {
     ...resetStoppedProgress(),
-    terminalReason: "stale",
+    terminalReason: stale ? "stale" : "interrupted",
     lastError: null,
-    resultsOpening: state.capturedCount > 0
+    resultsOpening: stale && state.capturedCount > 0
   });
   const ended = await writeEndedBudget(stopped);
-  await writeNotice("LinkedIn collection stopped because its saved run was stale.", "error");
-  await openResultsForRun(ended);
+  if (stale) {
+    await writeNotice("LinkedIn collection stopped because its saved run was stale.", "error");
+    await openResultsForRun(ended);
+    return;
+  }
+  await writeNotice("LinkedIn collection stopped because no active collector was present. Start manually to collect again.", "error");
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {

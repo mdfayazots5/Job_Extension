@@ -19,6 +19,13 @@ async function run() {
       title: "Local-only LinkedIn job",
       capturedAt: "2026-10-21T10:00:00.000Z",
       url: "https://www.linkedin.com/jobs/view/2/"
+    },
+    "naukri:3": {
+      siteId: "naukri",
+      jobId: "3",
+      title: "Newer local Naukri job without apply flags",
+      capturedAt: "2026-10-20T10:00:00.000Z",
+      url: "https://www.naukri.com/job-listings-role-3"
     }
   };
   const archived = new Map([
@@ -33,7 +40,11 @@ async function run() {
       siteId: "naukri",
       jobId: "3",
       title: "Old archived Naukri job",
-      capturedAt: "2026-08-01T10:00:00.000Z"
+      capturedAt: "2026-08-01T10:00:00.000Z",
+      companyApplyJob: false,
+      questionnaireIdPresent: true,
+      applyType: "Easy Apply",
+      recordUpdatedAt: "2026-10-22T10:00:00.000Z"
     }],
     ["indeed:0123456789abcdef", {
       siteId: "indeed",
@@ -53,9 +64,12 @@ async function run() {
     ["killswitch.naukri", { triggerCount: 2, lastTriggeredAt: "2026-10-20T10:00:00.000Z" }],
     ["budgets.indeed", { dayKey: "2026-10-21", runCount: 1 }]
   ]);
+  const archivedStatuses = new Map();
+  archivedStatuses.set("linkedin:2", { opened: false });
   const store = {
     records,
     "ui.lastSite": "linkedin",
+    "opened.linkedin": { "2": true },
     "hidden.linkedin": { "2": true },
     "progress.linkedin": { currentPage: 3 },
     "diagnostics.linkedin": [{ event: "temporary" }]
@@ -79,6 +93,27 @@ async function run() {
             return {
               ok: true,
               settings: [...archivedSettings.entries()].map(([key, value]) => ({ key, value }))
+            };
+          }
+          if (request.type === "updateJobStatuses") {
+            for (const update of request.updates) {
+              const key = `${request.siteId}:${update.jobId}`;
+              archivedStatuses.set(key, {
+                ...(archivedStatuses.get(key) || {}),
+                [update.statusName]: update.value
+              });
+            }
+            return { ok: true, saved: true };
+          }
+          if (request.type === "listJobStatuses") {
+            return {
+              ok: true,
+              statuses: [...archivedStatuses.entries()]
+                .filter(([key]) => key.startsWith(`${request.siteId}:`))
+                .map(([key, status]) => ({
+                  jobId: key.slice(request.siteId.length + 1),
+                  ...status
+                }))
             };
           }
           if (request.type === "upsert") {
@@ -148,18 +183,26 @@ async function run() {
   const result = await context.JobCollectorNativeBackup.restoreArchive();
   assert.deepEqual(JSON.parse(JSON.stringify(result)), {
     restored: 3,
-    synchronized: 2,
-    restoredSettings: 7,
-    synchronizedSettings: 2
+    synchronized: 3,
+    restoredSettings: 5,
+    synchronizedSettings: 1,
+    restoredStatuses: 3
   });
   assert.equal(store.records["linkedin:1"].title, "Newer local LinkedIn job");
   assert.equal(store.records["linkedin:2"].title, "Local-only LinkedIn job");
   assert.equal(store.records["naukri:3"].title, "Old archived Naukri job");
+  assert.equal(store.records["naukri:3"].companyApplyJob, false);
+  assert.equal(store.records["naukri:3"].questionnaireIdPresent, true);
+  assert.equal(store.records["naukri:3"].applyType, "Easy Apply");
   assert.equal(store.records["indeed:0123456789abcdef"].title, "Old archived Indeed job");
   assert.equal(archived.size, 4);
   assert.deepEqual(JSON.parse(JSON.stringify(store["linkedin:skipTitles"])), ["Archived exact title"]);
-  assert.deepEqual(JSON.parse(JSON.stringify(store["opened.linkedin"])), { "1": true });
+  assert.deepEqual(JSON.parse(JSON.stringify(store["opened.linkedin"])), {
+    "1": true,
+    "2": true
+  });
   assert.deepEqual(JSON.parse(JSON.stringify(store["hidden.indeed"])), { "0123456789abcdef": true });
+  assert.deepEqual(JSON.parse(JSON.stringify(store["hidden.linkedin"])), { "2": true });
   assert.deepEqual(JSON.parse(JSON.stringify(store["ui.naukri.filters"])), {
     locations: ["Pune"],
     experienceYears: ["3"]
@@ -176,7 +219,22 @@ async function run() {
     dayKey: "2026-10-21",
     runCount: 1
   });
-  assert.deepEqual(JSON.parse(JSON.stringify(archivedSettings.get("hidden.linkedin"))), { "2": true });
+  assert.equal(archivedSettings.has("hidden.linkedin"), false);
+  assert.deepEqual(archivedStatuses.get("linkedin:1"), { opened: true });
+  assert.deepEqual(archivedStatuses.get("linkedin:2"), { opened: true, hidden: true });
+  assert.deepEqual(archivedStatuses.get("indeed:0123456789abcdef"), { hidden: true });
+  await context.JobCollectorNativeBackup.updateJobStatus("linkedin", "1", "opened", false);
+  await context.JobCollectorNativeBackup.updateJobStatuses("linkedin", [
+    { jobId: "1", opened: false },
+    { jobId: "3", hidden: true }
+  ]);
+  const sharedLinkedInStatuses = await context.JobCollectorNativeBackup.getJobStatuses("linkedin");
+  assert.deepEqual(JSON.parse(JSON.stringify(sharedLinkedInStatuses)), {
+    "1": { opened: false },
+    "2": { opened: true, hidden: true },
+    "3": { hidden: true }
+  });
+  assert.equal(context.JobCollectorNativeBackup.isBackupSettingKey("opened.linkedin"), false);
   assert.deepEqual(store["progress.linkedin"], { currentPage: 3 });
   assert.deepEqual(store["diagnostics.linkedin"], [{ event: "temporary" }]);
   await context.JobCollectorNativeBackup.upsertSetting("linkedin:skipTitles", []);
@@ -184,6 +242,10 @@ async function run() {
   await assert.rejects(
     context.JobCollectorNativeBackup.upsertSetting("debug.linkedin", {}),
     /not eligible/
+  );
+  await assert.rejects(
+    context.JobCollectorNativeBackup.updateJobStatus("linkedin", "1", "opened", "yes"),
+    /boolean/
   );
 
   const currentNaukri = await context.JobCollectorStorage.getJobs("naukri");

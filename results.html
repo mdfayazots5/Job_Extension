@@ -62,10 +62,7 @@
             <button id="export-button" class="settings-menu-item" type="button">Export</button>
             <button id="skip-titles-button" class="settings-menu-item" type="button" hidden>Skip Title</button>
             <button id="view-logs-button" class="settings-menu-item" type="button">View Logs</button>
-            <label class="settings-menu-item settings-toggle" for="flow-logging-toggle">
-              <input id="flow-logging-toggle" type="checkbox">
-              <span id="flow-logging-label">Flow logs (LinkedIn)</span>
-            </label>
+            <button id="flow-logging-button" class="settings-menu-item" type="button">Flow logs</button>
           </div>
         </div>
         <p id="run-subtitle" class="subtitle" hidden></p>
@@ -99,6 +96,31 @@
             </table>
           </div>
         </form>
+      </dialog>
+
+      <dialog id="flow-logging-dialog" class="history-dialog flow-logging-dialog" aria-labelledby="flow-logging-heading">
+        <div class="history-header">
+          <div>
+            <h2 id="flow-logging-heading">Flow log settings</h2>
+            <p>Choose the platform whose flow should be recorded.</p>
+          </div>
+          <button id="flow-logging-close" class="icon-button" type="button" aria-label="Close flow log settings">×</button>
+        </div>
+        <fieldset class="flow-platform-options">
+          <legend>Log source</legend>
+          <label><input id="flow-log-site-results" type="radio" name="flow-log-site" value="results"> Results Page (this extension)</label>
+          <label><input id="flow-log-site-linkedin" type="radio" name="flow-log-site" value="linkedin"> LinkedIn</label>
+          <label><input id="flow-log-site-naukri" type="radio" name="flow-log-site" value="naukri"> Naukri</label>
+          <label><input id="flow-log-site-indeed" type="radio" name="flow-log-site" value="indeed"> Indeed</label>
+        </fieldset>
+        <label class="settings-toggle flow-logging-enable">
+          <input id="flow-logging-toggle" type="checkbox">
+          <span id="flow-logging-label">Enable flow logging</span>
+        </label>
+        <p id="flow-logging-error" class="history-error" role="alert" hidden></p>
+        <div class="flow-logging-actions">
+          <button id="flow-logging-save" class="primary-button" type="button">Save settings</button>
+        </div>
       </dialog>
 
       <dialog id="logs-dialog" class="history-dialog logs-dialog" aria-labelledby="logs-heading">
@@ -147,8 +169,8 @@
             <button id="company-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1">Company Apply (0)</button>
           </div>
           <label class="search-control">
-            <span id="search-label" class="visually-hidden">Search jobs by role or company</span>
-            <input id="search" type="search" autocomplete="off" placeholder="Search role or company">
+            <span id="search-label" class="visually-hidden">Search jobs by title, company, location, or skill using skill:.Net</span>
+            <input id="search" type="search" autocomplete="off" placeholder="Search title, company, location, or skill:.Net">
           </label>
           <label class="review-filter">
             <span class="visually-hidden">Filter by applicant review status</span>
@@ -201,6 +223,7 @@
     </main>
     <script src="config.js"></script>
     <script src="src/core/storage.js"></script>
+    <script src="src/core/native-backup.js"></script>
     <script src="src/sites/linkedin/selectors.js"></script>
     <script src="src/sites/linkedin/metadata.js"></script>
     <script src="src/sites/linkedin/adapter.js"></script>

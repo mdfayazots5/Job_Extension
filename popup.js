@@ -43,6 +43,47 @@ function getBudgetBlockReason(budget, config, now = Date.now()) {
   return "";
 }
 
+async function appendPopupFlowLog(siteId, event, details = {}) {
+  try {
+    const keys = globalThis.JobCollectorStorage.keysForSite(siteId);
+    const values = await chrome.storage.local.get([keys.flowLogging, keys.diagnostics]);
+    if (values[keys.flowLogging] !== true) {
+      return;
+    }
+    const previous = Array.isArray(values[keys.diagnostics])
+      ? values[keys.diagnostics]
+      : [];
+    const safeDetails = {};
+    if (typeof details.state === "string" && /^[A-Z_]{1,20}$/.test(details.state)) {
+      safeDetails.state = details.state;
+    }
+    if (typeof details.ok === "boolean") {
+      safeDetails.ok = details.ok;
+    }
+    if (typeof details.error === "string") {
+      safeDetails.error = details.error
+        .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+        .replace(/\b(token|csrf|cookie|authorization)\b\s*[:=]\s*\S+/gi, "$1=[redacted]")
+        .slice(0, 240);
+    }
+    if (Number.isFinite(details.elapsedMs)) {
+      safeDetails.elapsedMs = details.elapsedMs;
+    }
+    await chrome.storage.local.set({
+      [keys.diagnostics]: previous.concat({
+        at: new Date().toISOString(),
+        flow: true,
+        component: "popup",
+        event,
+        siteId,
+        ...safeDetails
+      }).slice(-200)
+    });
+  } catch (error) {
+    console.error("[Job Extensions] Could not save popup flow log", error);
+  }
+}
+
 async function refreshStorageSnapshot() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -83,20 +124,52 @@ async function refreshStorageSnapshot() {
 }
 
 async function sendAction(type) {
+  const button = type === "START_RUN" ? elements.start : elements.stop;
+  button.disabled = true;
+  let actionError = "";
+  const actionStartedAt = Date.now();
   try {
     if (!activeSiteId) {
-      elements.start.title = "Open a LinkedIn, Naukri, or Indeed search results page.";
-      return;
-    }
-    const response = await chrome.runtime.sendMessage({ type, siteId: activeSiteId });
-    if (response && !response.ok && response.error) {
-      elements.start.title = response.error;
-      await refreshStorageSnapshot();
+      actionError = "Open a LinkedIn, Naukri, or Indeed search results page.";
+    } else {
+      if (type === "START_RUN") {
+        void appendPopupFlowLog(activeSiteId, "start_clicked");
+      }
+      const response = await chrome.runtime.sendMessage({ type, siteId: activeSiteId });
+      if (response && !response.ok && response.error) {
+        actionError = response.error;
+      } else if (!response || !response.ok) {
+        actionError = "The collector did not acknowledge the request.";
+      }
+      if (type === "START_RUN") {
+        await appendPopupFlowLog(activeSiteId, "start_response", {
+          ok: Boolean(response && response.ok),
+          ...(actionError ? { error: actionError } : {}),
+          elapsedMs: Date.now() - actionStartedAt
+        });
+      }
     }
   } catch (error) {
-    elements.start.title = error instanceof Error
+    actionError = error instanceof Error
       ? error.message
       : "The service worker did not respond.";
+  } finally {
+    await refreshStorageSnapshot();
+    if (type === "START_RUN" && activeSiteId) {
+      try {
+        const runState = storageKeys ? storageSnapshot[storageKeys.runState] : null;
+        await appendPopupFlowLog(activeSiteId, "run_state_after_start", {
+          state: runState && typeof runState.state === "string" ? runState.state : "UNKNOWN",
+          ...(actionError ? { error: actionError } : {}),
+          elapsedMs: Date.now() - actionStartedAt
+        });
+      } catch (error) {
+        console.error("[Job Extensions] Could not save popup flow log", error);
+      }
+    }
+    if (actionError) {
+      button.title = actionError;
+    }
   }
 }
 
