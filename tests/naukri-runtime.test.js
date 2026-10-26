@@ -88,6 +88,51 @@ async function testRunLoop() {
   assert.equal(finished, true);
   assert.deepEqual(captured.map((record) => record.jobId), ["1", "2"]);
 
+  const countedPages = [];
+  let countedPageNavigations = 0;
+  let countedFinishPage = null;
+  const countingAdapter = {
+    ...adapter,
+    limits: { ...adapter.limits, maxPages: 25 },
+    getCurrentPage(_doc, url) {
+      const match = url.pathname.match(/-(\d+)$/);
+      return match ? Number(match[1]) : 1;
+    },
+    hasNextPage() { return true; },
+    async collectPage(context) {
+      countedPages.push(context.pageNumber);
+      return { capturedCount: countedPages.length };
+    },
+    async goNextPage(context) {
+      countedPageNavigations += 1;
+      const nextPage = context.pageNumber + 1;
+      context.url.pathname = `/sample-jobs-${nextPage}`;
+      context.setNextPage(nextPage);
+      return "inplace";
+    }
+  };
+  const countedContext = {
+    doc: {},
+    url: new URL("https://www.naukri.com/sample-jobs-25"),
+    pageNumber: 25,
+    startPageNumber: 25,
+    nextPageNumber: null,
+    setPage() {},
+    setNextPage(page) { this.nextPageNumber = page; },
+    async ensureVisible() {},
+    checkBlock() {},
+    async readStats() { return { capturedCount: countedPages.length }; },
+    getContainer() { return null; },
+    async beforeNextPage() {},
+    async writeProgress() {},
+    onPage() {},
+    async finish(page) { countedFinishPage = page; }
+  };
+  await JobCollectorRunLoop.run(countingAdapter, countedContext);
+  assert.deepEqual(countedPages, Array.from({ length: 25 }, (_, index) => index + 25));
+  assert.equal(countedPageNavigations, 24);
+  assert.equal(countedFinishPage, 49);
+
   finished = false;
   const singlePage = paginationDocument(1, "");
   const singleResult = await JobCollectorRunLoop.run(
@@ -282,7 +327,6 @@ async function testNaukriBackground() {
     runId: state.runId,
     record: {
       ...capturedRecord,
-      companyApplyJob: true,
       applyRedirectUrl: "https://company.example/apply?id=123456789012"
     }
   }, sender);
@@ -375,6 +419,19 @@ async function testNaukriBackground() {
   await background.handleMessage({ type: "START_RUN", siteId: "naukri" }, { id: chrome.runtime.id });
   state = store["runs.naukri"];
   await background.handleMessage({
+    type: "NAUKRI_RUN_FAILED",
+    siteId: "naukri",
+    runId: state.runId,
+    errorCode: "collector_error",
+    message: "Naukri search page returned 0 job cards on two consecutive checks."
+  }, sender);
+  assert.equal(store["runs.naukri"].state, "ERROR");
+  assert.equal(store["cooldown.naukri"].until, 0);
+  assert.equal(store["cooldown.naukri"].recentBlocks.length, 2);
+
+  await background.handleMessage({ type: "START_RUN", siteId: "naukri" }, { id: chrome.runtime.id });
+  state = store["runs.naukri"];
+  await background.handleMessage({
     type: "SAVE_CAPTURE",
     siteId: "naukri",
     runId: state.runId,
@@ -423,6 +480,16 @@ async function testNaukriBackground() {
   assert.equal(store["runs.naukri"].state, "STOPPED");
   assert.equal(store["runs.naukri"].terminalReason, "stale");
   assert.equal(store["cooldown.indeed"].until > Date.now(), true);
+
+  browserTabs[0].url = "https://www.naukri.com/dot-net-developer-jobs-in-bengaluru-25?k=dotnet";
+  await background.handleMessage(
+    { type: "START_RUN", siteId: "naukri" },
+    { id: chrome.runtime.id }
+  );
+  assert.equal(store["runs.naukri"].pageNumber, 25);
+  assert.equal(store["runs.naukri"].currentPage, 25);
+  assert.equal(store["runs.naukri"].startPageNumber, 25);
+  assert.equal(store["progress.naukri"].startPageNumber, 25);
   console.log("PASS Naukri background: global lock, site-scoped cooldown/kill-switch, stale recovery, dedupe/budget, persisted navigation, resume, and page-load timeout.");
 }
 

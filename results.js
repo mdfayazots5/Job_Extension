@@ -28,8 +28,19 @@ const elements = {
   exportButton: document.getElementById("export-button"),
   skipTitlesButton: document.getElementById("skip-titles-button"),
   viewLogsButton: document.getElementById("view-logs-button"),
+  flowLoggingButton: document.getElementById("flow-logging-button"),
   flowLoggingToggle: document.getElementById("flow-logging-toggle"),
   flowLoggingLabel: document.getElementById("flow-logging-label"),
+  flowLoggingDialog: document.getElementById("flow-logging-dialog"),
+  flowLoggingClose: document.getElementById("flow-logging-close"),
+  flowLoggingSave: document.getElementById("flow-logging-save"),
+  flowLoggingError: document.getElementById("flow-logging-error"),
+  flowLogSiteOptions: {
+    results: document.getElementById("flow-log-site-results"),
+    linkedin: document.getElementById("flow-log-site-linkedin"),
+    naukri: document.getElementById("flow-log-site-naukri"),
+    indeed: document.getElementById("flow-log-site-indeed")
+  },
   logsDialog: document.getElementById("logs-dialog"),
   logsHeading: document.getElementById("logs-heading"),
   logsSummary: document.getElementById("logs-summary"),
@@ -118,12 +129,20 @@ const elements = {
   feedback: document.getElementById("feedback")
 };
 const LAST_SITE_KEY = "ui.lastSite";
+const FLOW_LOG_SITE_KEY = "ui.flowLogSite";
+let flowLogSiteId = SITE_ID;
+let flowLogEnabled = false;
 const HISTORY_OPENED_KEYS = ["linkedin", "naukri", "indeed"].map(
   (siteId) => STORAGE_API.keysForSite(siteId).openedJobs
 );
 
 function getSkipTitlesStorageKey(siteId = SITE_ID) {
   return `${siteId}:skipTitles`;
+}
+
+function getFlowLogStorageKeys(siteId = flowLogSiteId) {
+  const keys = STORAGE_API.keysForSite(siteId === "results" ? "results-page" : siteId);
+  return { enabled: keys.flowLogging, diagnostics: keys.diagnostics };
 }
 
 let storageSnapshot = {
@@ -143,11 +162,23 @@ let editingSkipTitle = null;
 let siteCounts = { linkedin: 0, naukri: 0, indeed: 0 };
 let openedWriteQueue = Promise.resolve();
 let hiddenWriteQueue = Promise.resolve();
+let hidingSelectedJobs = false;
 let filterWriteQueue = Promise.resolve();
+let jobStatusWriteQueue = Promise.resolve();
+let localStatusWriteQueue = Promise.resolve();
+let statusRefreshPromise = null;
+let flowLoggingWriteQueue = Promise.resolve();
+let resultsFlowLogQueue = Promise.resolve();
+let resultsPageStartedAt = null;
 const selectedJobIds = new Set();
 const dynamicPostedLabels = new Map();
+const pendingJobStatusUpdates = {
+  opened: new Map(),
+  hidden: new Map()
+};
 let visibleJobIds = [];
 let sortState = { key: "posted", direction: "descending" };
+const sortStateBySite = new Map();
 
 function getStorageKeys(siteId) {
   return Object.freeze({
@@ -166,6 +197,7 @@ function configureSite(siteId) {
   }
   SITE_ID = siteId;
   SITE_ADAPTER = adapter;
+  sortState = { ...(sortStateBySite.get(siteId) || { key: "posted", direction: "descending" }) };
   STORAGE_KEYS = getStorageKeys(siteId);
   APPLY_TABS = adapter.ui.tabs.map((tab) => tab.id);
   TAB_LABELS = Object.fromEntries(adapter.ui.tabs.map((tab) => [tab.id, tab.label]));
@@ -177,23 +209,14 @@ function configureSite(siteId) {
   elements.siteRunFooter.hidden = siteId !== "naukri";
   elements.experienceFilterControl.hidden = siteId !== "naukri";
   elements.parseWarningFooter.hidden = true;
-  elements.search.placeholder = siteId === "naukri"
-    ? "Search role, company, agency, or skills"
-    : siteId === "indeed"
-      ? "Search role, company, or location"
-    : "Search role or company";
-  elements.searchLabel.textContent = siteId === "naukri"
-    ? "Search jobs by role, company, hiring agency, or skills"
-    : siteId === "indeed"
-      ? "Search jobs by role, company, or location"
-    : "Search jobs by role or company";
+  elements.search.placeholder = "Search title, company, location, or skill:.Net";
+  elements.searchLabel.textContent = "Search jobs by title, company, location, or skill (use skill:.Net for skill-only search)";
   elements.easyTab.hidden = false;
   elements.directTab.hidden = !adapter.ui.tabs.some((tab) => tab.id === "Direct Apply");
   elements.companyTab.hidden = !adapter.ui.tabs.some((tab) => (
     tab.id === "Company Apply" || tab.id === "Company Site"
   ));
   elements.skipTitlesButton.hidden = false;
-  elements.flowLoggingLabel.textContent = `Flow logs (${adapter.label})`;
   elements.skipTitleHeading.textContent = `Skip titles — ${adapter.label}`;
   closeSettingsMenu();
   elements.linkedinSite.setAttribute("aria-pressed", String(siteId === "linkedin"));
@@ -261,6 +284,7 @@ function renderHeaders() {
             ? "descending"
             : "ascending"
         };
+        sortStateBySite.set(SITE_ID, sortState);
         render();
       });
       heading.replaceChildren(button);
@@ -441,7 +465,9 @@ function matchesExperienceFilter(record, selectedBands) {
     "6-plus": [6, Infinity]
   };
   return selectedBands.some((band) => (
-    minimum <= bands[band][1] && maximum >= bands[band][0]
+    band === "6-plus"
+      ? minimum >= bands[band][0]
+      : minimum <= bands[band][1] && maximum >= bands[band][0]
   ));
 }
 
@@ -473,6 +499,31 @@ function matchesSearchTerm(value, term) {
   return false;
 }
 
+function matchesJobSearch(record, query) {
+  if (!query.trim()) {
+    return true;
+  }
+  const skillQuery = query.match(/^skill:\s*(.*)$/i);
+  const term = (skillQuery ? skillQuery[1] : query).trim();
+  if (!term) {
+    return false;
+  }
+  const fields = skillQuery
+    ? (Array.isArray(record.skills) ? record.skills : [])
+    : [
+      record.title,
+      record.company,
+      record.location,
+      record.locationRaw,
+      Array.isArray(record.locations) ? record.locations.join(" ") : ""
+    ];
+  const normalizedTerm = term.toLocaleLowerCase();
+  return fields.some((field) => (
+    typeof field === "string"
+    && matchesSearchTerm(field.toLocaleLowerCase(), normalizedTerm)
+  ));
+}
+
 function getRecordTab(record) {
   return typeof SITE_ADAPTER.ui.tabFor === "function"
     ? SITE_ADAPTER.ui.tabFor(record)
@@ -481,8 +532,10 @@ function getRecordTab(record) {
 
 function isRecordOpened(record) {
   const jobId = String(record.jobId || "");
-  return storageSnapshot.openedJobsById[jobId] === true
-    || (SITE_ID === "indeed" && record.visited === true);
+  if (Object.prototype.hasOwnProperty.call(storageSnapshot.openedJobsById, jobId)) {
+    return storageSnapshot.openedJobsById[jobId] === true;
+  }
+  return SITE_ID === "indeed" && record.visited === true;
 }
 
 function validHttpUrl(value) {
@@ -800,74 +853,32 @@ function getNaukriPostedTimestamp(record) {
 }
 
 function comparePostedRecords(first, second, direction, siteId = SITE_ID) {
-  if (siteId === "indeed") {
-    const postedKind = (record) => {
-      if (record.sponsored === true) {
-        return { type: "unknown", timestamp: null };
-      }
-      if (record.postedApprox || /^30\+/i.test(String(record.postedText || "").trim())) {
-        return { type: "approximate", timestamp: null };
-      }
-      const timestamp = getIndeedPostedTimestamp(record);
-      return timestamp === null
-        ? { type: "unknown", timestamp: null }
-        : { type: "dated", timestamp };
-    };
-    const firstPosted = postedKind(first);
-    const secondPosted = postedKind(second);
-    if (firstPosted.type !== secondPosted.type) {
-      const ranks = direction > 0
-        ? { approximate: 0, dated: 1, unknown: 2 }
-        : { dated: 0, approximate: 1, unknown: 2 };
-      return ranks[firstPosted.type] - ranks[secondPosted.type];
+  const getTimestamp = (record) => {
+    if (siteId === "linkedin") return getLinkedInPostedTimestamp(record);
+    if (siteId === "naukri") return getNaukriPostedTimestamp(record);
+    if (siteId === "indeed") return getIndeedPostedTimestamp(record);
+    const timestamp = Date.parse(String(record.postedDateEstimate || ""));
+    return Number.isFinite(timestamp) ? timestamp : null;
+  };
+  const getKind = (record) => {
+    if (record.sponsored === true) return "unknown";
+    if (record.postedApprox || /^30\+/i.test(String(record.postedText || "").trim())) {
+      return "approximate";
     }
-    return firstPosted.type === "dated"
-      ? (firstPosted.timestamp - secondPosted.timestamp) * direction
-      : 0;
+    return getTimestamp(record) === null ? "unknown" : "dated";
+  };
+  const firstKind = getKind(first);
+  const secondKind = getKind(second);
+  if (firstKind !== secondKind) {
+    const ranks = direction > 0
+      ? { approximate: 0, dated: 1, unknown: 2 }
+      : { dated: 0, approximate: 1, unknown: 2 };
+    return ranks[firstKind] - ranks[secondKind];
   }
-
-  if (siteId === "naukri") {
-    const firstAge = getNaukriPostedAge(first);
-    const secondAge = getNaukriPostedAge(second);
-    if (firstAge !== null && secondAge !== null) {
-      return (secondAge - firstAge) * direction;
-    }
-    if (firstAge !== null || secondAge !== null) {
-      return firstAge !== null ? -1 : 1;
-    }
+  if (firstKind !== "dated") {
+    return 0;
   }
-
-  if (siteId === "linkedin") {
-    const firstDate = getLinkedInPostedTimestamp(first);
-    const secondDate = getLinkedInPostedTimestamp(second);
-    if (firstDate === null || secondDate === null) {
-      if (firstDate === null && secondDate === null) {
-        return 0;
-      }
-      return firstDate === null ? 1 : -1;
-    }
-    return (firstDate - secondDate) * direction;
-  }
-
-  const firstDate = Date.parse(
-    first.postedDateEstimate
-    || ("${escapeHtml(SITE_ID)}" === "naukri" ? first.capturedAt : "")
-    || ""
-  );
-  const secondDate = Date.parse(
-    second.postedDateEstimate
-    || ("${escapeHtml(SITE_ID)}" === "naukri" ? second.capturedAt : "")
-    || ""
-  );
-  const normalizedFirst = Number.isNaN(firstDate) ? -Infinity : firstDate;
-  const normalizedSecond = Number.isNaN(secondDate) ? -Infinity : secondDate;
-  if (
-    "${escapeHtml(SITE_ID)}" === "linkedin"
-    && Number.isFinite(normalizedFirst) !== Number.isFinite(normalizedSecond)
-  ) {
-    return Number.isFinite(normalizedFirst) ? -1 : 1;
-  }
-  return (normalizedFirst - normalizedSecond) * direction;
+  return (getTimestamp(first) - getTimestamp(second)) * direction;
 }
 
 function escapeHtml(value) {
@@ -880,7 +891,10 @@ function escapeHtml(value) {
 }
 
 function buildStandaloneReport(records, openedJobsById, runState, savedSelectedTab, savedFilterSettings) {
-  const reportTabs = SITE_ADAPTER.ui.tabs.map(({ id, label }) => ({ id, label }));
+  const reportTabs = [
+    ...(SITE_ID === "naukri" ? [{ id: ALL_TAB, label: ALL_TAB }] : []),
+    ...SITE_ADAPTER.ui.tabs.map(({ id, label }) => ({ id, label }))
+  ];
   const reportFilterSettings = normalizeFilterSettings(savedFilterSettings);
   const reportRecords = records.map((record) => ({
     jobId: String(record.jobId || ""),
@@ -893,6 +907,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       || record.locationRaw
       || "Location not listed"
     ),
+    sponsored: record.sponsored === true,
     experience: String(record.experience || ""),
     tabId: getRecordTab(record),
     companyApplyUrl: validHttpUrl(record.companyApplyUrl),
@@ -903,12 +918,18 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     postedDateEstimate: String(
       SITE_ID === "linkedin" && getLinkedInPostedTimestamp(record) !== null
         ? new Date(getLinkedInPostedTimestamp(record)).toISOString()
-        : record.postedDateEstimate || ""
+        : SITE_ID === "naukri" && getNaukriPostedTimestamp(record) !== null
+          ? new Date(getNaukriPostedTimestamp(record)).toISOString()
+          : SITE_ID === "indeed" && getIndeedPostedTimestamp(record) !== null
+            ? new Date(getIndeedPostedTimestamp(record)).toISOString()
+            : record.postedDateEstimate || ""
     ),
     postedApprox: record.postedApprox === true,
+    sponsored: record.sponsored === true,
     pubDate: typeof record.pubDate === "number" || typeof record.pubDate === "string"
       ? record.pubDate
       : null,
+    skills: Array.isArray(record.skills) ? record.skills.filter((skill) => typeof skill === "string") : [],
     applicantReviewStatus: record.applicantReviewStatus === "actively-reviewing"
       ? "actively-reviewing"
       : "not-indicated",
@@ -956,7 +977,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     .tab{min-height:40px;padding:8px 15px;border:1px solid transparent;border-radius:9px;background:var(--surface);color:var(--muted);cursor:pointer;font-size:.9rem;font-weight:650}
     .tab:hover{color:var(--text)}.tab[aria-selected="true"]{background:var(--easy);color:#fff;box-shadow:0 2px 5px rgb(10 42 78 / 16%)}
     body[data-active-tab="Company Site"] .tab[aria-selected="true"]{background:var(--company)}
-    .search-control input{width:min(280px,28vw);min-width:190px;min-height:40px;padding:8px 13px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:.88rem}
+    .search-control input{width:min(340px,32vw);min-width:220px;min-height:40px;padding:8px 13px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:.88rem}
     .search-control input:focus{border-color:var(--easy);outline:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--easy) 16%,transparent)}
     body[data-active-tab="Company Site"] .search-control input:focus{border-color:var(--company);box-shadow:0 0 0 3px color-mix(in srgb,var(--company) 16%,transparent)}
     .review-filter select{min-height:40px;padding:8px 30px 8px 11px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:.84rem}
@@ -1011,9 +1032,10 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         <button id="easy-tab" class="tab" type="button" role="tab" aria-selected="true" aria-controls="results-panel" tabindex="0">Easy Apply (0)</button>
         <button id="direct-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1"${reportTabs.some((tab) => tab.id === "Direct Apply") ? "" : " hidden"}>Direct Apply (0)</button>
         <button id="company-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1">Company Apply (0)</button>
+        ${SITE_ID === "naukri" ? '<button id="all-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1">All (0)</button>' : ""}
       </div>
       <div class="filters">
-        <label class="search-control"><span class="visually-hidden">Search jobs by role or company</span><input id="search" type="search" autocomplete="off" placeholder="Search role or company"></label>
+        <label class="search-control"><span class="visually-hidden">Search jobs by title, company, location, or skill using skill:.Net</span><input id="search" type="search" autocomplete="off" placeholder="Search title, company, location, or skill:.Net"></label>
         <label class="review-filter"><span class="visually-hidden">Filter by applicant review status</span><select id="applicant-review-filter"><option value="">All review statuses</option><option value="actively-reviewing">Actively reviewing</option><option value="not-indicated">No status shown</option></select></label>
         <fieldset class="filter-group"><legend>Location</legend>
           <label><input class="location-filter" data-location="hyderabad" type="checkbox"${reportFilterSettings.locations.includes("hyderabad") ? " checked" : ""}> Hyderabad</label>
@@ -1054,14 +1076,17 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     const records = ${embeddedRecords};
     const initiallyOpened = ${embeddedOpened};
     const tabs = ${embeddedTabs};
+    const allTab = document.getElementById("all-tab");
     const easyTab = document.getElementById("easy-tab");
     const directTab = document.getElementById("direct-tab");
     const companyTab = document.getElementById("company-tab");
-    const buttonForTab = (tab, index) => tab.id === "Direct Apply"
-      ? directTab
-      : tab.id === "Company Apply" || tab.id === "Company Site"
+    const buttonForTab = (tab, index) => tab.id === "All"
+      ? allTab
+      : tab.id === "Direct Apply"
+        ? directTab
+        : tab.id === "Company Apply" || tab.id === "Company Site"
         ? companyTab
-        : index === 0 ? easyTab : companyTab;
+          : index === 0 ? easyTab : companyTab;
     const body = document.getElementById("job-table-body");
     const search = document.getElementById("search");
     const applicantReviewFilter = document.getElementById("applicant-review-filter");
@@ -1180,78 +1205,21 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       return Number.isFinite(pubDate) ? pubDate : null;
     };
     const comparePosted = (first, second, direction) => {
-      if ("${escapeHtml(SITE_ID)}" !== "indeed") {
-        if ("${escapeHtml(SITE_ID)}" === "linkedin") {
-          const age = (record) => {
-            const text = String(record.postedText || "")
-              .replace(/\\b(?:over\\s+)?[\\d,]+\\+?\\s+people clicked apply\\b|\\b1 person clicked apply\\b/gi, "")
-              .replace(/\\s*[·•]\\s*/g, " ")
-              .trim()
-              .toLowerCase();
-            if (/^(?:just now|just posted|today)$/.test(text)) return 0;
-            if (text === "yesterday") return 86400000;
-            const match = text.match(/^(\\d+)\\+?\\s*(minutes?|hours?|days?|weeks?|months?|years?)\\s+ago$/);
-            if (!match) return null;
-            const unit = match[2].replace(/s$/, "");
-            const duration = {
-              minute: 60000,
-              hour: 3600000,
-              day: 86400000,
-              week: 604800000,
-              month: 2592000000,
-              year: 31536000000
-            }[unit];
-            return Number(match[1]) * duration;
-          };
-          const firstAge = age(first);
-          const secondAge = age(second);
-          if (firstAge !== null && secondAge !== null) {
-            return (secondAge - firstAge) * direction;
-          }
-          if (firstAge !== null || secondAge !== null) {
-            return firstAge !== null ? -1 : 1;
-          }
-        }
-        if ("${escapeHtml(SITE_ID)}" === "naukri") {
-          const age = (record) => {
-            const text = String(record.postedText || "").trim().toLowerCase();
-            if (/^(?:just now|few hours ago|today)$/.test(text)) return 0;
-            const match = text.match(/^(\\d+)\\+?\\s+(hours?|days?|weeks?|months?)\\s+ago$/);
-            if (!match) return null;
-            const amount = Number(match[1]);
-            const unit = match[2].replace(/s$/, "");
-            return amount * (unit === "hour" ? 1 / 24 : unit === "day" ? 1 : unit === "week" ? 7 : 30);
-          };
-          const firstAge = age(first);
-          const secondAge = age(second);
-          if (firstAge !== null && secondAge !== null) {
-            return (secondAge - firstAge) * direction;
-          }
-          if (firstAge !== null || secondAge !== null) {
-            return firstAge !== null ? -1 : 1;
-          }
-        }
-        const firstDate = Date.parse(first.postedDateEstimate || first.capturedAt || "");
-        const secondDate = Date.parse(second.postedDateEstimate || second.capturedAt || "");
-        const normalizedFirst = Number.isNaN(firstDate) ? -Infinity : firstDate;
-        const normalizedSecond = Number.isNaN(secondDate) ? -Infinity : secondDate;
-        return (normalizedFirst - normalizedSecond) * direction;
-      }
-      const kind = (record) => record.sponsored === true
-        ? { type: "unknown", timestamp: null }
+      const kind = (record) => record.sponsored
+        ? "unknown"
         : record.postedApprox || /^30\\+/i.test(String(record.postedText || "").trim())
-          ? { type: "approximate", timestamp: null }
-          : { type: postedTimestamp(record) === null ? "unknown" : "dated", timestamp: postedTimestamp(record) };
-      const firstPosted = kind(first);
-      const secondPosted = kind(second);
-      if (firstPosted.type !== secondPosted.type) {
+          ? "approximate"
+          : postedTimestamp(record) === null ? "unknown" : "dated";
+      const firstKind = kind(first);
+      const secondKind = kind(second);
+      if (firstKind !== secondKind) {
         const ranks = direction > 0
           ? { approximate: 0, dated: 1, unknown: 2 }
           : { dated: 0, approximate: 1, unknown: 2 };
-        return ranks[firstPosted.type] - ranks[secondPosted.type];
+        return ranks[firstKind] - ranks[secondKind];
       }
-      return firstPosted.type === "dated"
-        ? (firstPosted.timestamp - secondPosted.timestamp) * direction
+      return firstKind === "dated"
+        ? (postedTimestamp(first) - postedTimestamp(second)) * direction
         : 0;
     };
     const saveOpened = () => {
@@ -1310,7 +1278,9 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         "6-plus": [6, Infinity]
       };
       return filterSettings.experienceYears.some((band) => (
-        minimum <= bands[band][1] && maximum >= bands[band][0]
+        band === "6-plus"
+          ? minimum >= bands[band][0]
+          : minimum <= bands[band][1] && maximum >= bands[band][0]
       ));
     };
     const matchesSearchTerm = (value, term) => {
@@ -1329,9 +1299,21 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       }
       return false;
     };
+    const matchesJobSearch = (record, query) => {
+      if (!query.trim()) return true;
+      const skillQuery = query.match(/^skill:\\s*(.*)$/i);
+      const term = (skillQuery ? skillQuery[1] : query).trim();
+      if (!term) return false;
+      const fields = skillQuery
+        ? record.skills
+        : [record.title, record.company, record.location];
+      return (Array.isArray(fields) ? fields : [])
+        .some((field) => typeof field === "string"
+          && matchesSearchTerm(field.toLocaleLowerCase(), term.toLocaleLowerCase()));
+    };
     const render = () => {
       const grouped = records.filter((record) => (
-        record.tabId === selectedTab && matchesFilters(record)
+        (selectedTab === "All" || record.tabId === selectedTab) && matchesFilters(record)
       ));
       const term = search.value.trim().toLocaleLowerCase();
       const reviewStatus = applicantReviewFilter.value;
@@ -1339,7 +1321,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         (!reviewStatus || (record.applicantReviewStatus === "actively-reviewing"
           ? "actively-reviewing"
           : "not-indicated") === reviewStatus)
-        && matchesSearchTerm((record.title + " " + record.company).toLocaleLowerCase(), term)
+        && matchesJobSearch(record, term)
       ));
       const visible = matched.filter((record) => (
         !filterSettings.hideOpened || opened[record.jobId] !== true
@@ -1445,7 +1427,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
           apply.tabIndex = -1;
         }
         actions.appendChild(apply);
-        if (selectedTab === tabs[1].id && record.companyApplyUrl) {
+        if (selectedTab === "Company Apply" && record.companyApplyUrl) {
           actions.appendChild(text("span", "via-linkedin", "via LinkedIn"));
         }
         applyCell.appendChild(actions);
@@ -1703,12 +1685,20 @@ function closeSettingsMenu() {
   elements.settingsButton.setAttribute("aria-expanded", "false");
 }
 
-function renderFlowLogs(entries) {
+function getFlowLogSiteLabel(siteId = flowLogSiteId) {
+  if (siteId === "results") {
+    return "Results Page";
+  }
+  return globalThis.JobCollectorSiteRegistry.getAdapter(siteId)?.label || siteId;
+}
+
+function renderFlowLogs(entries, siteId = flowLogSiteId, enabled = flowLogEnabled) {
   const logs = Array.isArray(entries) ? entries.slice(-200) : [];
-  elements.logsHeading.textContent = `${SITE_ADAPTER.label} flow logs`;
+  const siteLabel = getFlowLogSiteLabel(siteId);
+  elements.logsHeading.textContent = `${siteLabel} flow logs`;
   elements.logsSummary.textContent = logs.length
-    ? `Showing the latest ${logs.length} diagnostic entries. Flow logging is ${storageSnapshot.flowLoggingEnabled ? "on" : "off"}.`
-    : `No diagnostic entries are saved for ${SITE_ADAPTER.label}. Flow logging is ${storageSnapshot.flowLoggingEnabled ? "on" : "off"}.`;
+    ? `Showing the latest ${logs.length} diagnostic entries. Flow logging is ${enabled ? "on" : "off"}.`
+    : `No diagnostic entries are saved for ${siteLabel}. Flow logging is ${enabled ? "on" : "off"}.`;
   elements.logsContent.value = logs.length ? JSON.stringify(logs, null, 2) : "No logs yet.";
   elements.copyLogsButton.disabled = logs.length === 0;
   elements.logsError.hidden = true;
@@ -1719,8 +1709,10 @@ async function openLogsDialog() {
   elements.logsError.hidden = true;
   elements.logsCopyStatus.textContent = "";
   try {
-    const values = await chrome.storage.local.get(STORAGE_KEYS.diagnostics);
-    renderFlowLogs(values[STORAGE_KEYS.diagnostics]);
+    const keys = getFlowLogStorageKeys();
+    const values = await chrome.storage.local.get([keys.diagnostics, keys.enabled]);
+    flowLogEnabled = values[keys.enabled] === true;
+    renderFlowLogs(values[keys.diagnostics], flowLogSiteId, flowLogEnabled);
     if (!elements.logsDialog.open) {
       elements.logsDialog.showModal();
     }
@@ -1877,22 +1869,313 @@ function setFeedback(text) {
   elements.feedback.textContent = text;
 }
 
-function updateOpenedState(jobId, isOpened) {
-  const operation = openedWriteQueue.then(async () => {
-    const values = await chrome.storage.local.get(STORAGE_KEYS.opened);
-    const saved = values[STORAGE_KEYS.opened];
-    const openedJobs = saved
-      && typeof saved === "object"
-      && !Array.isArray(saved)
-      ? { ...saved }
-      : {};
-    if (isOpened) {
-      openedJobs[jobId] = true;
-    } else {
-      delete openedJobs[jobId];
+async function openFlowLoggingSettings() {
+  elements.flowLoggingError.hidden = true;
+  try {
+    const values = await chrome.storage.local.get([
+      FLOW_LOG_SITE_KEY,
+      STORAGE_API.keysForSite("results-page").flowLogging,
+      ...STORAGE_API.siteIds.map((siteId) => STORAGE_API.keysForSite(siteId).flowLogging)
+    ]);
+    const savedSite = values[FLOW_LOG_SITE_KEY];
+    flowLogSiteId = savedSite === "results"
+      ? "results"
+      : globalThis.JobCollectorSiteRegistry.getAdapter(savedSite)
+      ? savedSite
+      : SITE_ID;
+    const selectedKeys = getFlowLogStorageKeys(flowLogSiteId);
+    flowLogEnabled = values[selectedKeys.enabled] === true;
+    for (const [siteId, option] of Object.entries(elements.flowLogSiteOptions)) {
+      option.checked = siteId === flowLogSiteId;
     }
-    await chrome.storage.local.set({ [STORAGE_KEYS.opened]: openedJobs });
+    elements.flowLoggingToggle.checked = flowLogEnabled;
+    elements.flowLoggingLabel.textContent = `Enable flow logging for ${getFlowLogSiteLabel()}`;
+    if (!elements.flowLoggingDialog.open) {
+      elements.flowLoggingDialog.showModal();
+    }
+  } catch (error) {
+    elements.flowLoggingError.textContent = `Could not load flow log settings: ${error.message}`;
+    elements.flowLoggingError.hidden = false;
+    if (!elements.flowLoggingDialog.open) {
+      elements.flowLoggingDialog.showModal();
+    }
+  }
+}
+
+async function updateFlowLoggingSelection(siteId) {
+  if (siteId !== "results" && !globalThis.JobCollectorSiteRegistry.getAdapter(siteId)) {
+    throw new Error("Choose a supported platform for flow logging.");
+  }
+  const keys = getFlowLogStorageKeys(siteId);
+  const values = await chrome.storage.local.get(keys.enabled);
+  elements.flowLoggingToggle.checked = values[keys.enabled] === true;
+  elements.flowLoggingLabel.textContent = `Enable flow logging for ${getFlowLogSiteLabel(siteId)}`;
+  elements.flowLoggingError.hidden = true;
+}
+
+function persistFlowLoggingSettings(siteId, enabled) {
+  const operation = flowLoggingWriteQueue.then(async () => {
+    const keys = getFlowLogStorageKeys(siteId);
+    const updates = {
+      [FLOW_LOG_SITE_KEY]: siteId,
+      [keys.enabled]: enabled
+    };
+    const current = await chrome.storage.local.get(keys.enabled);
+    if (enabled && current[keys.enabled] !== true) {
+      updates[keys.diagnostics] = [];
+    }
+    await chrome.storage.local.set(updates);
+    const verified = await chrome.storage.local.get([FLOW_LOG_SITE_KEY, keys.enabled]);
+    if (verified[FLOW_LOG_SITE_KEY] !== siteId || verified[keys.enabled] !== enabled) {
+      throw new Error("Chrome did not confirm the selected platform and flow logging setting.");
+    }
+    flowLogSiteId = siteId;
+    flowLogEnabled = enabled;
+    elements.flowLoggingToggle.checked = enabled;
+    elements.flowLoggingLabel.textContent = `Enable flow logging for ${getFlowLogSiteLabel(siteId)}`;
+    elements.flowLoggingError.hidden = true;
+    await appendResultsFlow("flow_logging_settings_saved", { enabled });
+    elements.flowLoggingDialog.close();
+    setFeedback(
+      `Flow logging ${enabled ? "enabled" : "disabled"} for ${getFlowLogSiteLabel(siteId)}.`
+    );
   });
+  flowLoggingWriteQueue = operation.catch(() => {});
+  return operation;
+}
+
+function countNamespacedRecords(value) {
+  const records = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+  return Object.fromEntries(STORAGE_API.siteIds.map((siteId) => [
+    siteId,
+    Object.keys(records).filter((key) => key.startsWith(`${siteId}:`)).length
+  ]));
+}
+
+async function appendResultsFlow(event, details = {}) {
+  const operation = resultsFlowLogQueue.then(async () => {
+    try {
+      const keys = getFlowLogStorageKeys();
+      const values = await chrome.storage.local.get([
+        keys.enabled,
+        keys.diagnostics
+      ]);
+      if (values[keys.enabled] !== true) {
+        return;
+      }
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const previous = Array.isArray(values[keys.diagnostics])
+        ? values[keys.diagnostics].filter((entry) => (
+          entry
+          && Number.isFinite(Date.parse(entry.at))
+          && Date.parse(entry.at) >= cutoff
+        ))
+        : [];
+      await chrome.storage.local.set({
+        [keys.diagnostics]: previous.concat({
+          at: new Date().toISOString(),
+          flow: true,
+          component: "results-page",
+          event,
+          siteId: flowLogSiteId,
+          elapsedMs: resultsPageStartedAt === null ? null : Date.now() - resultsPageStartedAt,
+          ...details
+        }).slice(-1000)
+      });
+    } catch (error) {
+      console.error("[Job Extensions] Could not save results-page flow log", error);
+    }
+  });
+  resultsFlowLogQueue = operation;
+  return operation;
+}
+
+async function readLocalJobStatuses() {
+  const values = await chrome.storage.local.get([STORAGE_KEYS.opened, STORAGE_KEYS.hidden]);
+  const openedJobs = values[STORAGE_KEYS.opened]
+    && typeof values[STORAGE_KEYS.opened] === "object"
+    && !Array.isArray(values[STORAGE_KEYS.opened])
+    ? { ...values[STORAGE_KEYS.opened] }
+    : {};
+  const hiddenJobs = values[STORAGE_KEYS.hidden]
+    && typeof values[STORAGE_KEYS.hidden] === "object"
+    && !Array.isArray(values[STORAGE_KEYS.hidden])
+    ? { ...values[STORAGE_KEYS.hidden] }
+    : {};
+  return { openedJobs, hiddenJobs };
+}
+
+async function writeLocalJobStatuses(updates) {
+  const { openedJobs, hiddenJobs } = await readLocalJobStatuses();
+  for (const update of updates) {
+    for (const statusName of ["opened", "hidden"]) {
+      if (!Object.prototype.hasOwnProperty.call(update, statusName)) {
+        continue;
+      }
+      const statusMap = statusName === "opened" ? openedJobs : hiddenJobs;
+      statusMap[update.jobId] = update[statusName] === true;
+    }
+  }
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.opened]: openedJobs,
+    [STORAGE_KEYS.hidden]: hiddenJobs
+  });
+  return { openedJobs, hiddenJobs };
+}
+
+function trackPendingJobStatusUpdates(updates) {
+  for (const update of updates) {
+    for (const statusName of ["opened", "hidden"]) {
+      if (Object.prototype.hasOwnProperty.call(update, statusName)) {
+        pendingJobStatusUpdates[statusName].set(update.jobId, update[statusName] === true);
+      }
+    }
+  }
+}
+
+function clearPendingJobStatusUpdates(updates) {
+  for (const update of updates) {
+    for (const statusName of ["opened", "hidden"]) {
+      if (
+        Object.prototype.hasOwnProperty.call(update, statusName)
+        && pendingJobStatusUpdates[statusName].get(update.jobId) === update[statusName]
+      ) {
+        pendingJobStatusUpdates[statusName].delete(update.jobId);
+      }
+    }
+  }
+}
+
+function applyPendingJobStatusUpdates(openedJobs, hiddenJobs) {
+  for (const [jobId, value] of pendingJobStatusUpdates.opened) {
+    openedJobs[jobId] = value;
+  }
+  for (const [jobId, value] of pendingJobStatusUpdates.hidden) {
+    hiddenJobs[jobId] = value;
+  }
+}
+
+async function synchronizeJobStatuses(updates) {
+  let localOperation = null;
+  if (updates) {
+    localOperation = localStatusWriteQueue.then(() => writeLocalJobStatuses(updates));
+    localStatusWriteQueue = localOperation.catch(() => {});
+  }
+  const operation = jobStatusWriteQueue.then(async () => {
+    const syncStartedAt = Date.now();
+    let localStatuses = null;
+    if (updates) {
+      localStatuses = await localOperation;
+      storageSnapshot.openedJobsById = localStatuses.openedJobs;
+      storageSnapshot.hiddenJobsById = localStatuses.hiddenJobs;
+      applyPendingJobStatusUpdates(
+        storageSnapshot.openedJobsById,
+        storageSnapshot.hiddenJobsById
+      );
+      render();
+    }
+    if (!chrome.runtime || typeof chrome.runtime.sendMessage !== "function") {
+      localStatuses = localStatuses || await readLocalJobStatuses();
+      storageSnapshot.openedJobsById = localStatuses.openedJobs;
+      storageSnapshot.hiddenJobsById = localStatuses.hiddenJobs;
+      applyPendingJobStatusUpdates(
+        storageSnapshot.openedJobsById,
+        storageSnapshot.hiddenJobsById
+      );
+      if (updates) {
+        clearPendingJobStatusUpdates(updates);
+      }
+      await appendResultsFlow("status_sync_succeeded", {
+        transport: "local-storage",
+        durationMs: Date.now() - syncStartedAt,
+        openedCount: Object.keys(localStatuses.openedJobs).length,
+        hiddenCount: Object.keys(localStatuses.hiddenJobs).length
+      });
+      render();
+      return localStatuses;
+    }
+    const response = await chrome.runtime.sendMessage({
+      type: "SYNC_JOB_STATUSES",
+      siteId: SITE_ID,
+      ...(updates ? { updates } : {})
+    });
+    if (!response || response.ok !== true
+      || !response.openedJobs || typeof response.openedJobs !== "object"
+      || !response.hiddenJobs || typeof response.hiddenJobs !== "object") {
+      throw new Error(response && typeof response.error === "string"
+        ? response.error
+        : "The shared job-status update was not acknowledged.");
+    }
+    if (updates && updates.some((update) => (
+      ["opened", "hidden"].some((statusName) => (
+        Object.prototype.hasOwnProperty.call(update, statusName)
+        && response[statusName === "opened" ? "openedJobs" : "hiddenJobs"][update.jobId]
+          !== update[statusName]
+      ))
+    ))) {
+      throw new Error("The shared archive did not confirm all requested job-status updates.");
+    }
+    if (updates) {
+      clearPendingJobStatusUpdates(updates);
+    }
+    storageSnapshot.openedJobsById = response.openedJobs;
+    storageSnapshot.hiddenJobsById = response.hiddenJobs;
+    applyPendingJobStatusUpdates(
+      storageSnapshot.openedJobsById,
+      storageSnapshot.hiddenJobsById
+    );
+    await appendResultsFlow("status_sync_succeeded", {
+      transport: "background-message",
+      durationMs: Date.now() - syncStartedAt,
+      openedCount: Object.keys(response.openedJobs).length,
+      hiddenCount: Object.keys(response.hiddenJobs).length
+    });
+    render();
+    return response;
+  });
+  jobStatusWriteQueue = operation.catch(() => {});
+  return operation;
+}
+
+function refreshSharedJobStatuses() {
+  if (statusRefreshPromise) {
+    return statusRefreshPromise;
+  }
+  const syncStartedAt = Date.now();
+  statusRefreshPromise = synchronizeJobStatuses()
+    .catch((error) => {
+      void appendResultsFlow("status_sync_failed", {
+        durationMs: Date.now() - syncStartedAt,
+        error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)
+      });
+      setFeedback(`Could not synchronize opened and hidden jobs: ${error.message}`);
+    })
+    .finally(() => {
+      statusRefreshPromise = null;
+    });
+  return statusRefreshPromise;
+}
+
+function scheduleSharedJobStatusRefresh() {
+  globalThis.setTimeout(() => {
+    if (document.visibilityState !== "hidden") {
+      void refreshSharedJobStatuses();
+    }
+    scheduleSharedJobStatusRefresh();
+  }, 5000);
+}
+
+function updateOpenedState(jobId, isOpened) {
+  const updates = [{ jobId, opened: isOpened }];
+  trackPendingJobStatusUpdates(updates);
+  applyPendingJobStatusUpdates(
+    storageSnapshot.openedJobsById,
+    storageSnapshot.hiddenJobsById
+  );
+  render();
+  const operation = openedWriteQueue.then(() => synchronizeJobStatuses(updates));
   openedWriteQueue = operation.catch(() => {});
   return operation;
 }
@@ -2241,13 +2524,7 @@ function render() {
         || (record.applicantReviewStatus === "actively-reviewing"
           ? "actively-reviewing"
           : "not-indicated") === applicantReviewStatus)
-      && matchesSearchTerm(
-        `${record.title || ""} ${record.company || ""} ${record.postedBy || ""} ${
-        Array.isArray(record.skills) ? record.skills.join(" ") : ""
-      } ${SITE_ID === "indeed" ? `${record.location || ""} ${record.locationRaw || ""}` : ""}`
-          .toLocaleLowerCase(),
-        searchTerm
-      )
+      && matchesJobSearch(record, searchTerm)
     ));
     const visibleRecords = sortRecords(matchingRecords.filter((record) => {
       const jobId = String(record.jobId || "");
@@ -2276,7 +2553,9 @@ function render() {
     const selectedButton = getTabButton(selectedTab);
     elements.panel.setAttribute("aria-labelledby", selectedButton.id);
     document.body.dataset.activeTab = selectedTab;
-    const easyApplyCount = records.filter((record) => record.applyType === "Easy Apply").length;
+    const easyApplyCount = records.filter((record) => (
+      getRecordTab(record) === "Easy Apply"
+    )).length;
     const activelyReviewingCount = records.filter(
       (record) => record.applicantReviewStatus === "actively-reviewing"
     ).length;
@@ -2388,7 +2667,7 @@ function updateHideControls() {
       && selectedVisibleCount < visibleJobIds.length;
     elements.selectAllJobs.disabled = visibleJobIds.length === 0;
   }
-  elements.hideSelectedJobs.disabled = selectedJobIds.size === 0;
+  elements.hideSelectedJobs.disabled = selectedJobIds.size === 0 || hidingSelectedJobs;
   const hasHiddenOrOpenedJobs = getRecords().some((record) => {
     return storageSnapshot.hiddenJobsById[String(record.jobId || "")] === true
       || isRecordOpened(record);
@@ -2408,26 +2687,62 @@ function updateHideControls() {
 
 async function hideSelectedJobs() {
   const selectedIds = Array.from(selectedJobIds);
-  if (selectedIds.length === 0) {
+  if (selectedIds.length === 0 || hidingSelectedJobs) {
     return;
   }
-  selectedJobIds.clear();
-  const operation = hiddenWriteQueue.then(async () => {
-    const values = await chrome.storage.local.get(STORAGE_KEYS.hidden);
-    const current = values[STORAGE_KEYS.hidden];
-    const hiddenJobs = current && typeof current === "object" && !Array.isArray(current)
-      ? { ...current }
-      : {};
-    for (const jobId of selectedIds) {
-      hiddenJobs[jobId] = true;
-    }
-    await chrome.storage.local.set({ [STORAGE_KEYS.hidden]: hiddenJobs });
-  });
-  hiddenWriteQueue = operation.catch((error) => {
-    setFeedback(`Could not hide selected jobs: ${error.message}`);
-  });
-  await hiddenWriteQueue;
+  hidingSelectedJobs = true;
+  const updates = selectedIds.map((jobId) => ({ jobId, hidden: true }));
+  trackPendingJobStatusUpdates(updates);
+  applyPendingJobStatusUpdates(
+    storageSnapshot.openedJobsById,
+    storageSnapshot.hiddenJobsById
+  );
+  for (const jobId of selectedIds) {
+    selectedJobIds.delete(jobId);
+  }
+  hidingSelectedJobs = false;
   render();
+  void persistHiddenJobStatuses(updates);
+}
+
+async function persistHiddenJobStatuses(updates) {
+  const operation = hiddenWriteQueue.then(async () => {
+    const localStatuses = await writeLocalJobStatuses(updates);
+    storageSnapshot.openedJobsById = localStatuses.openedJobs;
+    storageSnapshot.hiddenJobsById = localStatuses.hiddenJobs;
+    applyPendingJobStatusUpdates(
+      storageSnapshot.openedJobsById,
+      storageSnapshot.hiddenJobsById
+    );
+    render();
+    for (let offset = 0; offset < updates.length; offset += 1000) {
+      await synchronizeJobStatuses(updates.slice(offset, offset + 1000));
+    }
+  });
+  hiddenWriteQueue = operation.catch(() => {});
+  try {
+    await operation;
+  } catch (error) {
+    try {
+      const values = await chrome.storage.local.get([STORAGE_KEYS.opened, STORAGE_KEYS.hidden]);
+      storageSnapshot.openedJobsById = values[STORAGE_KEYS.opened] || {};
+      storageSnapshot.hiddenJobsById = values[STORAGE_KEYS.hidden] || {};
+      clearPendingJobStatusUpdates(updates);
+      for (const update of updates) {
+        if (storageSnapshot.hiddenJobsById[update.jobId] !== true) {
+          selectedJobIds.add(update.jobId);
+        }
+      }
+      render();
+      if (updates.every((update) => storageSnapshot.hiddenJobsById[update.jobId] === true)) {
+        setFeedback(`Jobs are hidden locally, but could not sync their status to the shared archive: ${error.message}`);
+      } else {
+        setFeedback(`Could not hide selected jobs: ${error.message}`);
+      }
+    } catch (localError) {
+      setFeedback(`Jobs are hidden in this view, but could not confirm local status storage: ${localError.message}`);
+    }
+  }
 }
 
 async function toggleHiddenJobsView() {
@@ -2473,6 +2788,39 @@ async function clearHiddenJobs() {
   }
 }
 
+async function loadSiteData(siteId, selectAll = false) {
+  const values = await chrome.storage.local.get([
+    STORAGE_KEYS.opened,
+    STORAGE_KEYS.hidden,
+    STORAGE_KEYS.runState,
+    STORAGE_KEYS.selectedTab,
+    STORAGE_KEYS.filters,
+    getSkipTitlesStorageKey(siteId),
+    STORAGE_KEYS.jobs
+  ]);
+  const recordsValue = values[STORAGE_KEYS.jobs] || {};
+  storageSnapshot = {
+    jobsById: unpackSiteJobs(recordsValue),
+    openedJobsById: values[STORAGE_KEYS.opened] || {},
+    hiddenJobsById: values[STORAGE_KEYS.hidden] || {},
+    filterSettings: normalizeFilterSettings(values[STORAGE_KEYS.filters]),
+    collectorState: values[STORAGE_KEYS.runState] || null,
+    resultsSelectedTab: values[STORAGE_KEYS.selectedTab] || null,
+    skipTitles: normalizeSkipTitles(values[getSkipTitlesStorageKey(siteId)])
+  };
+  renderSiteCounts(recordsValue);
+  renderSkipTitleList();
+  setFilterControls(storageSnapshot.filterSettings);
+  chooseInitialTab(getRecords());
+  if (selectAll) {
+    selectedTab = ALL_TAB;
+  }
+  if (storageSnapshot.resultsSelectedTab !== selectedTab) {
+    await chrome.storage.local.set({ [STORAGE_KEYS.selectedTab]: selectedTab });
+  }
+  render();
+}
+
 async function switchSite(siteId) {
   if (!globalThis.JobCollectorSiteRegistry.getAdapter(siteId)) {
     return;
@@ -2480,25 +2828,35 @@ async function switchSite(siteId) {
   try {
     selectedJobIds.clear();
     await chrome.storage.local.set({ [LAST_SITE_KEY]: siteId });
-    const destination = new URL(globalThis.location.href);
-    destination.search = "";
-    destination.hash = "";
-    if (typeof globalThis.location.assign === "function") {
-      globalThis.location.assign(destination.href);
-      return;
+    configureSite(siteId);
+    if (globalThis.history && typeof globalThis.history.replaceState === "function") {
+      const nextUrl = new URL(globalThis.location.href);
+      nextUrl.searchParams.set("site", siteId);
+      nextUrl.hash = "";
+      globalThis.history.replaceState(null, "", nextUrl.href);
     }
-    globalThis.location.search = destination.search;
-    await initializeResultsPage();
+    await loadSiteData(siteId, true);
+    void refreshSharedJobStatuses();
   } catch (error) {
     setFeedback(`Could not switch sites: ${error.message}`);
   }
 }
 
 async function initializeResultsPage() {
-  const preference = await chrome.storage.local.get([LAST_SITE_KEY, "records"]);
+  resultsPageStartedAt = Date.now();
+  const preferenceReadStartedAt = Date.now();
+  const preference = await chrome.storage.local.get([LAST_SITE_KEY, FLOW_LOG_SITE_KEY]);
+  const preferenceReadDurationMs = Date.now() - preferenceReadStartedAt;
   const savedSite = preference[LAST_SITE_KEY];
   const siteId = REQUESTED_SITE_ID
     || (globalThis.JobCollectorSiteRegistry.getAdapter(savedSite) ? savedSite : "linkedin");
+  const savedFlowLogSite = preference[FLOW_LOG_SITE_KEY];
+  flowLogSiteId = savedFlowLogSite === "results"
+    ? "results"
+    : globalThis.JobCollectorSiteRegistry.getAdapter(savedFlowLogSite)
+    ? savedFlowLogSite
+    : siteId;
+  await appendResultsFlow("results_page_start");
   configureSite(siteId);
   if (savedSite !== siteId) {
     await chrome.storage.local.set({ [LAST_SITE_KEY]: siteId });
@@ -2507,31 +2865,53 @@ async function initializeResultsPage() {
     const canonicalUrl = new URL(globalThis.location.href);
     canonicalUrl.search = "";
     canonicalUrl.hash = "";
-    if (canonicalUrl.href !== globalThis.location.href) {
+    if (REQUESTED_SITE_ID || siteId !== "linkedin") {
+      canonicalUrl.searchParams.set("site", siteId);
+    }
+    const shouldSyncUrl = REQUESTED_SITE_ID
+      || siteId !== "linkedin"
+      || canonicalUrl.search !== globalThis.location.search
+      || canonicalUrl.hash !== globalThis.location.hash;
+    if (shouldSyncUrl) {
       globalThis.history.replaceState(null, "", canonicalUrl.href);
     }
   }
-  renderSiteCounts(preference.records);
   const values = await chrome.storage.local.get([
     STORAGE_KEYS.opened,
     STORAGE_KEYS.hidden,
     STORAGE_KEYS.runState,
     STORAGE_KEYS.selectedTab,
     STORAGE_KEYS.filters,
-    getSkipTitlesStorageKey(siteId),
-    STORAGE_KEYS.flowLogging
+    getSkipTitlesStorageKey(siteId)
   ]);
   storageSnapshot = {
-    jobsById: await readSiteJobs(),
+    jobsById: unpackSiteJobs(preference.records),
     openedJobsById: values[STORAGE_KEYS.opened] || {},
     hiddenJobsById: values[STORAGE_KEYS.hidden] || {},
     filterSettings: normalizeFilterSettings(values[STORAGE_KEYS.filters]),
     collectorState: values[STORAGE_KEYS.runState] || null,
     resultsSelectedTab: values[STORAGE_KEYS.selectedTab] || null,
-    skipTitles: normalizeSkipTitles(values[getSkipTitlesStorageKey(siteId)]),
-    flowLoggingEnabled: values[STORAGE_KEYS.flowLogging] === true
+    skipTitles: normalizeSkipTitles(values[getSkipTitlesStorageKey(siteId)])
   };
-  elements.flowLoggingToggle.checked = storageSnapshot.flowLoggingEnabled;
+  await appendResultsFlow("results_settings_loaded", {
+    durationMs: preferenceReadDurationMs
+  });
+  const recordsBeforeSyncStartedAt = Date.now();
+  const recordsBeforeSync = await chrome.storage.local.get(STORAGE_KEYS.jobs);
+  await appendResultsFlow("records_before_status_sync", {
+    durationMs: Date.now() - recordsBeforeSyncStartedAt,
+    recordCounts: countNamespacedRecords(recordsBeforeSync[STORAGE_KEYS.jobs])
+  });
+  void refreshSharedJobStatuses();
+  const recordsReadStartedAt = Date.now();
+  const recordsValue = await chrome.storage.local.get(STORAGE_KEYS.jobs);
+  await appendResultsFlow("records_after_status_sync", {
+    durationMs: Date.now() - recordsReadStartedAt,
+    recordCounts: countNamespacedRecords(recordsValue[STORAGE_KEYS.jobs]),
+    selectedSiteCount: countNamespacedRecords(recordsValue[STORAGE_KEYS.jobs])[siteId]
+  });
+  renderSiteCounts(recordsValue[STORAGE_KEYS.jobs]);
+  storageSnapshot.jobsById = unpackSiteJobs(recordsValue[STORAGE_KEYS.jobs]);
   renderSkipTitleList();
   setFilterControls(storageSnapshot.filterSettings);
   chooseInitialTab(getRecords());
@@ -2539,8 +2919,13 @@ async function initializeResultsPage() {
     await chrome.storage.local.set({ [STORAGE_KEYS.selectedTab]: selectedTab });
   }
   render();
+  await appendResultsFlow("results_page_ready", {
+    durationMs: Date.now() - resultsPageStartedAt,
+    selectedSiteCount: getRecords().length
+  });
   setDefaultHistoryRange();
   schedulePostedAgeRefresh();
+  scheduleSharedJobStatusRefresh();
 }
 
 function handleTabKeydown(event, tab) {
@@ -2611,16 +2996,37 @@ elements.logsClose.addEventListener("click", () => {
 elements.copyLogsButton.addEventListener("click", () => {
   void copyFlowLogs();
 });
-elements.flowLoggingToggle.addEventListener("change", () => {
-  const enabled = elements.flowLoggingToggle.checked;
-  const updates = { [STORAGE_KEYS.flowLogging]: enabled };
-  if (enabled && !storageSnapshot.flowLoggingEnabled) {
-    updates[STORAGE_KEYS.diagnostics] = [];
-  }
-  void chrome.storage.local.set(updates).catch((error) => {
-    elements.flowLoggingToggle.checked = storageSnapshot.flowLoggingEnabled;
-    setFeedback(`Could not update flow logging: ${error.message}`);
+elements.flowLoggingButton.addEventListener("click", () => {
+  closeSettingsMenu();
+  void openFlowLoggingSettings();
+});
+elements.flowLoggingClose.addEventListener("click", () => {
+  elements.flowLoggingDialog.close();
+});
+for (const [siteId, option] of Object.entries(elements.flowLogSiteOptions)) {
+  option.addEventListener("change", () => {
+    if (!option.checked) {
+      return;
+    }
+    void updateFlowLoggingSelection(siteId).catch((error) => {
+      elements.flowLoggingError.textContent = `Could not load platform settings: ${error.message}`;
+      elements.flowLoggingError.hidden = false;
+    });
   });
+}
+elements.flowLoggingSave.addEventListener("click", () => {
+  const selectedSite = Object.entries(elements.flowLogSiteOptions)
+    .find(([, option]) => option.checked)?.[0];
+  if (!selectedSite) {
+    elements.flowLoggingError.textContent = "Select LinkedIn, Naukri, or Indeed.";
+    elements.flowLoggingError.hidden = false;
+    return;
+  }
+  void persistFlowLoggingSettings(selectedSite, elements.flowLoggingToggle.checked)
+    .catch((error) => {
+      elements.flowLoggingError.textContent = `Could not save flow log settings: ${error.message}`;
+      elements.flowLoggingError.hidden = false;
+    });
 });
 elements.skipTitleClose.addEventListener("click", () => {
   elements.skipTitleDialog.close();
@@ -2672,6 +3078,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.records) {
     renderSiteCounts(changes.records.newValue);
+    void appendResultsFlow("records_storage_changed", {
+      recordCounts: countNamespacedRecords(changes.records.newValue),
+      selectedSiteCount: countNamespacedRecords(changes.records.newValue)[SITE_ID]
+    });
+  }
+  if (changes[FLOW_LOG_SITE_KEY]
+    && (changes[FLOW_LOG_SITE_KEY].newValue === "results"
+      || globalThis.JobCollectorSiteRegistry.getAdapter(changes[FLOW_LOG_SITE_KEY].newValue))) {
+    flowLogSiteId = changes[FLOW_LOG_SITE_KEY].newValue;
   }
   if (changes[STORAGE_KEYS.jobs]) {
     storageSnapshot.jobsById = unpackSiteJobs(changes[STORAGE_KEYS.jobs].newValue);
@@ -2700,19 +3115,20 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     } else if (key === getSkipTitlesStorageKey()) {
       storageSnapshot.skipTitles = normalizeSkipTitles(change.newValue);
       renderSkipTitleList();
-    } else if (key === STORAGE_KEYS.flowLogging) {
-      storageSnapshot.flowLoggingEnabled = change.newValue === true;
-      elements.flowLoggingToggle.checked = storageSnapshot.flowLoggingEnabled;
+    } else if (key === getFlowLogStorageKeys().enabled) {
+      flowLogEnabled = change.newValue === true;
+      elements.flowLoggingToggle.checked = flowLogEnabled;
       if (elements.logsDialog.open) {
-        void chrome.storage.local.get(STORAGE_KEYS.diagnostics).then((values) => {
-          renderFlowLogs(values[STORAGE_KEYS.diagnostics]);
+        const logKeys = getFlowLogStorageKeys();
+        void chrome.storage.local.get(logKeys.diagnostics).then((values) => {
+          renderFlowLogs(values[logKeys.diagnostics], flowLogSiteId, flowLogEnabled);
         }).catch((error) => {
           elements.logsError.textContent = `Could not refresh logs: ${error.message}`;
           elements.logsError.hidden = false;
         });
       }
-    } else if (key === STORAGE_KEYS.diagnostics && elements.logsDialog.open) {
-      renderFlowLogs(change.newValue);
+    } else if (key === getFlowLogStorageKeys().diagnostics && elements.logsDialog.open) {
+      renderFlowLogs(change.newValue, flowLogSiteId, flowLogEnabled);
     }
   }
   if (
@@ -2738,6 +3154,19 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     });
   }
 });
+
+if (typeof document.addEventListener === "function") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "hidden") {
+      void refreshSharedJobStatuses();
+    }
+  });
+}
+if (typeof globalThis.addEventListener === "function") {
+  globalThis.addEventListener("focus", () => {
+    void refreshSharedJobStatuses();
+  });
+}
 
 initializeResultsPage().catch((error) => {
   setFeedback(`Could not read saved results: ${error.message}`);

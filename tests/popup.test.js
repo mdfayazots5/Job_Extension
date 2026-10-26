@@ -9,6 +9,8 @@ async function run() {
   const storageListeners = [];
   const createdTabs = [];
   const sentMessages = [];
+  let activeUrl = "https://in.indeed.com/jobs?q=developer";
+  let actionResponse = { ok: true };
   for (const id of [
     "start",
     "stop",
@@ -51,12 +53,13 @@ async function run() {
       })(),
       lastRunAt: new Date().toISOString()
     },
-    "cooldown.indeed": { until: 0 }
+    "cooldown.indeed": { until: 0 },
+    "debug.linkedin": true
   };
   const chrome = {
     tabs: {
       async query() {
-        return [{ url: "https://in.indeed.com/jobs?q=developer" }];
+        return [{ url: activeUrl }];
       },
       async create(options) {
         createdTabs.push(options);
@@ -78,7 +81,13 @@ async function run() {
       getURL(path) { return `chrome-extension://collector-test/${path}`; },
       async sendMessage(message) {
         sentMessages.push(message);
-        return { ok: true, enabled: message.enabled };
+        if (message.type === "START_RUN" && actionResponse.ok) {
+          store[`runs.${message.siteId}`] = {
+            siteId: message.siteId,
+            state: "RUNNING"
+          };
+        }
+        return actionResponse;
       }
     }
   };
@@ -86,7 +95,7 @@ async function run() {
     siteId,
     {
       id: siteId,
-      limits: { maxPages: 50, maxJobsPerRun: 500, maxJobsPerDay: 2000 }
+      limits: { maxPages: 50, maxJobsPerRun: 500, maxJobsPerDay: 5000 }
     }
   ]));
   const getAdapterForUrl = (value) => {
@@ -111,6 +120,7 @@ async function run() {
             notice: `notices.${siteId}`,
             budget: `budgets.${siteId}`,
             cooldown: `cooldown.${siteId}`,
+            diagnostics: `diagnostics.${siteId}`,
             flowLogging: `debug.${siteId}`
           };
         }
@@ -142,6 +152,35 @@ async function run() {
   const popupHtml = fs.readFileSync("popup.html", "utf8");
   assert.equal((popupHtml.match(/<button\b/g) || []).length, 3);
   assert.doesNotMatch(popupHtml, /Jobs this run|Jobs today|<output|<h1/);
+
+  activeUrl = "https://www.linkedin.com/jobs/search-results/?keywords=developer";
+  store["runs.linkedin"] = { siteId: "linkedin", state: "STOPPED" };
+  await vm.runInContext("refreshStorageSnapshot()", context);
+  await elements.get("start").dispatch("click");
+  assert.deepEqual(JSON.parse(JSON.stringify(sentMessages[sentMessages.length - 1])), {
+    type: "START_RUN",
+    siteId: "linkedin"
+  });
+  assert.equal(elements.get("start").disabled, true);
+  assert.deepEqual(
+    Array.from(store["diagnostics.linkedin"], (entry) => entry.event),
+    [
+      "start_clicked",
+      "start_response",
+      "run_state_after_start"
+    ]
+  );
+
+  store["runs.linkedin"] = { siteId: "linkedin", state: "STOPPED" };
+  actionResponse = { ok: false, error: "LinkedIn content script rejected the run." };
+  await vm.runInContext("refreshStorageSnapshot()", context);
+  await elements.get("start").dispatch("click");
+  assert.equal(elements.get("start").disabled, false);
+  assert.equal(elements.get("start").title, actionResponse.error);
+  const failedStartLogs = store["diagnostics.linkedin"];
+  assert.equal(failedStartLogs[failedStartLogs.length - 2].event, "start_response");
+  assert.equal(failedStartLogs[failedStartLogs.length - 2].ok, false);
+  assert.equal(failedStartLogs[failedStartLogs.length - 1].state, "STOPPED");
   console.log("Popup tests passed: compact Start/Stop/View controls and results-page logging settings.");
 }
 

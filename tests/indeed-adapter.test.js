@@ -26,7 +26,7 @@ const adapter = context.JobCollectorIndeedAdapter;
 const parser = context.JobCollectorIndeedParser;
 assert.equal(adapter.limits.maxPages, 50);
 assert.equal(adapter.limits.maxJobsPerRun, 500);
-assert.equal(adapter.limits.maxJobsPerDay, 2000);
+assert.equal(adapter.limits.maxJobsPerDay, 5000);
 assert.equal(context.JobCollectorIndeedConfig.excludedRoleTerms, undefined);
 assert.equal(adapter.shouldSkipRole({ title: "Software Engineer" }), false);
 assert.equal(adapter.shouldSkipRole({ title: "Software Engineer" }, ["Software Engineer"]), true);

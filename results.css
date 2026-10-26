@@ -287,6 +287,55 @@ tr:focus-visible {
   max-width: 760px;
 }
 
+.flow-logging-dialog {
+  width: min(420px, calc(100% - 28px));
+  padding: 20px;
+}
+
+.flow-logging-dialog > .history-header {
+  margin-bottom: 18px;
+}
+
+.flow-platform-options {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.flow-platform-options legend {
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.flow-platform-options label,
+.flow-logging-enable {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.88rem;
+}
+
+.flow-platform-options input,
+.flow-logging-enable input {
+  accent-color: var(--accent);
+}
+
+.flow-logging-enable {
+  margin-top: 14px;
+  cursor: pointer;
+}
+
+.flow-logging-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
 .logs-content {
   box-sizing: border-box;
   width: 100%;

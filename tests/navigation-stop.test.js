@@ -5,9 +5,15 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const { JSDOM } = require("jsdom");
 
-function loadSite(siteId, markup) {
+function loadSite(siteId, markup, {
+  pageNumber = 1,
+  includeApiResponse = true,
+  enableFlowLog = false
+} = {}) {
   const domain = siteId === "indeed" ? "https://in.indeed.com" : "https://www.naukri.com";
-  const search = siteId === "indeed" ? "/jobs?q=developer" : "/dot-net-developer-jobs";
+  const search = siteId === "indeed"
+    ? "/jobs?q=developer"
+    : `/dot-net-developer-jobs${pageNumber > 1 ? `-${pageNumber}` : ""}`;
   const dom = new JSDOM(markup, {
     url: `${domain}${search}`,
     pretendToBeVisual: true
@@ -32,7 +38,9 @@ function loadSite(siteId, markup) {
     siteId,
     state: "RUNNING",
     runId,
-    pageNumber: 1,
+    pageNumber,
+    currentPage: pageNumber,
+    startPageNumber: pageNumber,
     capturedCount: 0,
     capturedJobIds: [],
     microPauseEveryPages: 99
@@ -52,7 +60,7 @@ function loadSite(siteId, markup) {
       local: {
         async get(key) {
           if (key === `runs.${siteId}`) return { [key]: runState };
-          if (key === "debug.naukri") return { [key]: false };
+          if (key === "debug.naukri") return { [key]: enableFlowLog };
           return {};
         }
       }
@@ -116,7 +124,7 @@ function loadSite(siteId, markup) {
   for (const file of files) {
     vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
   }
-  if (siteId === "naukri") {
+  if (siteId === "naukri" && includeApiResponse) {
     context.JobCollectorNaukriApiResponses = {
       1: {
         status: 200,
@@ -141,8 +149,8 @@ function loadSite(siteId, markup) {
   };
 }
 
-async function startAndStopPendingNavigation(siteId, markup) {
-  const harness = loadSite(siteId, markup);
+async function startAndStopPendingNavigation(siteId, markup, options = {}) {
+  const harness = loadSite(siteId, markup, options);
   await new Promise((resolve, reject) => {
     const returnedAsync = harness.listener(
       { type: "START_RUN", siteId, runId: harness.runId },
@@ -169,6 +177,22 @@ async function startAndStopPendingNavigation(siteId, markup) {
     harness.messages.some((message) => message.type === prepareType),
     `${siteId} prepared navigation: ${JSON.stringify(harness.messages.map((message) => [message.type, message.message]))}`
   );
+  if (options.expectNextPage) {
+    const preparedNavigation = harness.messages.find((message) => message.type === prepareType);
+    assert.equal(preparedNavigation.pageNumber, options.expectNextPage);
+    assert.ok(
+      harness.messages.some((message) => (
+        message.type === "NAUKRI_FLOW_LOG"
+        && message.event === "application-api-unavailable"
+      )),
+      "Naukri records an explicit diagnostic when the initial search response is missing"
+    );
+    assert.equal(
+      harness.messages.some((message) => message.type === "NAUKRI_RUN_FAILED"),
+      false,
+      "Naukri continues collecting the visible page when the initial search response is unavailable"
+    );
+  }
   for (let attempt = 0; attempt < 20 && harness.longTimers.size === 0; attempt += 1) {
     await new Promise((resolve) => global.setTimeout(resolve, 2));
   }
@@ -213,6 +237,20 @@ async function run() {
       <div class="comp-name">Company</div>
     </div>
     <div id="lastCompMark"><a class="selected">1</a><a rel="next">Next page</a></div>`
+  );
+  await startAndStopPendingNavigation(
+    "naukri",
+    `<div class="srp-jobtuple-wrapper" data-job-id="223456789012">
+      <a class="title" href="/job-listings-role-223456789012">Role</a>
+      <div class="comp-name">Company</div>
+    </div>
+    <div id="lastCompMark"><a class="selected">25</a><a rel="next">Next page</a></div>`,
+    {
+      pageNumber: 25,
+      includeApiResponse: false,
+      enableFlowLog: true,
+      expectNextPage: 26
+    }
   );
   console.log("Navigation Stop tests passed: pending Indeed and Naukri timers/monitors clear after Stop.");
 }

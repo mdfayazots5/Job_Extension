@@ -43,7 +43,7 @@ Promise.resolve()
     [linkedin.budget]: { jobsToday: 1 },
     [linkedin.cooldown]: { until: Date.now() + 86400000 },
     [linkedin.killSwitch]: { triggerCount: 1 },
-    [linkedin.openedJobs]: { "101": true }
+    [linkedin.openedJobs]: { "101": true, old: false }
   }))
   .then(() => storage.setJobs("naukri", {
     "202": { jobId: "202", capturedAt: fresh }
@@ -75,7 +75,7 @@ Promise.resolve()
     assert.deepEqual(store[linkedin.killSwitch], { triggerCount: 1 });
     assert.deepEqual(store[naukri.killSwitch], { triggerCount: 0 });
     assert.deepEqual(store[indeed.killSwitch], { triggerCount: 2 });
-    assert.deepEqual(JSON.parse(JSON.stringify(store[linkedin.openedJobs])), { "101": true });
+    assert.deepEqual(JSON.parse(JSON.stringify(store[linkedin.openedJobs])), { "101": true, old: false });
     assert.deepEqual(JSON.parse(JSON.stringify(store[naukri.openedJobs])), { "202": true });
     assert.deepEqual(JSON.parse(JSON.stringify(store[indeed.openedJobs])), { "303": true, old: true });
     assert.deepEqual(JSON.parse(JSON.stringify(store[indeed.diagnostics])), [{ at: fresh, event: "indeed-only" }]);

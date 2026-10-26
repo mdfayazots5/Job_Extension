@@ -168,7 +168,6 @@ check("N+ weeks is estimated from capture time", synthetic.postedDateEstimate, "
 check("posted type is Posted", synthetic.postedType, "Posted", synthetic.postedType);
 check("apply type is Naukri", synthetic.applyType, "Naukri", synthetic.applyType);
 check("missing API flag stays unclassified in raw record", synthetic.companyApplyJob, null, synthetic.companyApplyJob);
-check("false companyApplyJob maps to Easy Apply", adapter.ui.tabFor({ companyApplyJob: false }), "Easy Apply", false);
 check("true companyApplyJob maps to Company Apply", adapter.ui.tabFor({ companyApplyJob: true }), "Company Apply", true);
 check(
   "questionnaireIdPresent true maps to Easy Apply",
@@ -177,10 +176,65 @@ check(
   true
 );
 check(
-  "questionnaireIdPresent false maps to Direct Apply",
+  "questionnaireIdPresent false maps to the merged Easy Apply tab",
   adapter.ui.tabFor({ companyApplyJob: false, questionnaireIdPresent: false }),
-  "Direct Apply",
+  "Easy Apply",
   false
+);
+check(
+  "missing flags are not guessed to be Easy Apply",
+  adapter.ui.tabFor({ companyApplyJob: null, questionnaireIdPresent: null, applyType: "Naukri" }),
+  "Unclassified",
+  "missing application flags"
+);
+check(
+  "questionnaire flag classifies into the merged Easy Apply tab",
+  adapter.ui.tabFor({ companyApplyJob: null, questionnaireIdPresent: true, applyType: "Naukri" }),
+  "Easy Apply",
+  "companyApplyJob missing"
+);
+check(
+  "questionnaire false alone classifies into the merged Easy Apply tab",
+  adapter.ui.tabFor({ companyApplyJob: null, questionnaireIdPresent: false }),
+  "Easy Apply",
+  "companyApplyJob missing"
+);
+check(
+  "company flag without questionnaire flag is unclassified",
+  adapter.ui.tabFor({ companyApplyJob: false, questionnaireIdPresent: null }),
+  "Unclassified",
+  "questionnaireIdPresent missing"
+);
+check(
+  "external redirect identifies company application when flags are missing",
+  adapter.ui.tabFor({
+    companyApplyJob: null,
+    questionnaireIdPresent: null,
+    applyRedirectUrl: "https://jobs.smartrecruiters.com/company/123"
+  }),
+  "Company Apply",
+  "external apply redirect"
+);
+check(
+  "Naukri redirect URL alone does not identify an application type",
+  adapter.ui.tabFor({
+    companyApplyJob: null,
+    questionnaireIdPresent: null,
+    applyRedirectUrl: "https://www.naukri.com/apply/123",
+    applyType: "Naukri"
+  }),
+  "Unclassified",
+  "Naukri-hosted redirect"
+);
+check(
+  "external redirect conflicting with explicit in-platform flag remains unclassified",
+  adapter.ui.tabFor({
+    companyApplyJob: false,
+    questionnaireIdPresent: true,
+    applyRedirectUrl: "https://jobs.smartrecruiters.com/company/123"
+  }),
+  "Unclassified",
+  "conflicting apply evidence"
 );
 check(
   "company application takes precedence over questionnaire presence",
@@ -189,9 +243,9 @@ check(
   "companyApplyJob=true"
 );
 check(
-  "Naukri exposes Easy, Direct, and Company Apply tabs",
+  "Naukri exposes only the merged Easy Apply and Company Apply tabs",
   adapter.ui.tabs.map((tab) => tab.id),
-  ["Easy Apply", "Direct Apply", "Company Apply"],
+  ["Easy Apply", "Company Apply"],
   adapter.ui.tabs
 );
 check("apply URL is the record URL", adapter.ui.applyUrl(synthetic), synthetic.url, synthetic.url);
@@ -249,13 +303,38 @@ check(
   },
   "jobDetails"
 );
-assert.throws(
-  () => adapter.parseApplicationDetails({ jobDetails: [{ jobId: "1003" }] }),
-  /missing the companyApplyJob flag/
+check(
+  "API job with missing application flags is preserved as unclassified",
+  adapter.parseApplicationDetails({ jobDetails: [{ jobId: "1003" }] }),
+  {
+    "1003": {
+      companyApplyJob: null,
+      questionnaireIdPresent: null,
+      applyRedirectUrl: null
+    }
+  },
+  "jobDetails without application flags"
 );
 assert.throws(
   () => adapter.parseApplicationDetails({}),
   /does not contain a jobDetails list/
+);
+check(
+  "API records with missing flags are retained as unclassified evidence",
+  adapter.parseApplicationDetails({
+    jobDetails: [{
+      jobId: "1006",
+      applyRedirectUrl: "https://jobs.smartrecruiters.com/company/1006"
+    }]
+  }),
+  {
+    "1006": {
+      companyApplyJob: null,
+      questionnaireIdPresent: null,
+      applyRedirectUrl: "https://jobs.smartrecruiters.com/company/1006"
+    }
+  },
+  "missing application flags"
 );
 check(
   "normalized API record retains apply classification",
@@ -264,13 +343,37 @@ check(
   "companyApplyJob=true"
 );
 check(
-  "normalized questionnaire response retains Direct Apply classification",
+  "external redirect fills a missing companyApplyJob flag",
+  adapter.normalize({
+    jobId: "1007",
+    companyApplyJob: null,
+    questionnaireIdPresent: null,
+    applyRedirectUrl: "https://jobs.smartrecruiters.com/company/1007"
+  }),
+  {
+    jobId: "1007",
+    companyApplyJob: true,
+    questionnaireIdPresent: null,
+    applyRedirectUrl: "https://jobs.smartrecruiters.com/company/1007",
+    siteId: "naukri",
+    applyType: "Company Apply"
+  },
+  "external apply redirect"
+);
+check(
+  "normalized record with no reliable evidence remains unclassified",
+  adapter.normalize({ jobId: "1008", applyType: "Naukri" }).applyType,
+  "Unclassified",
+  "missing application flags"
+);
+check(
+  "normalized Direct Apply evidence joins the merged Easy Apply tab",
   adapter.normalize({
     jobId: "1005",
     companyApplyJob: false,
     questionnaireIdPresent: false
   }).applyType,
-  "Direct Apply",
+  "Easy Apply",
   "questionnaireIdPresent=false"
 );
 
@@ -344,6 +447,42 @@ check(
   ),
   "Naukri access block detected in page content.",
   "Access Denied"
+);
+check(
+  "login redirect by itself is not classified as an access block",
+  adapter.detectBlock(
+    new JSDOM("<title>Login</title><body>Please sign in</body>").window.document,
+    new URL("https://www.naukri.com/mnjuser/login")
+  ),
+  null,
+  "login redirect"
+);
+check(
+  "reference number by itself is not classified as an access block",
+  adapter.detectBlock(
+    new JSDOM("<title>Reference #123</title><body>Request could not be completed</body>").window.document,
+    new URL("https://www.naukri.com/dot-net-developer-jobs")
+  ),
+  null,
+  "reference-only page"
+);
+check(
+  "captcha mentioned in unrelated page content is not classified as an access block",
+  adapter.detectBlock(
+    new JSDOM("<title>Job search</title><body>Experience with captcha-solving systems</body>").window.document,
+    new URL("https://www.naukri.com/dot-net-developer-jobs")
+  ),
+  null,
+  "unrelated captcha mention"
+);
+check(
+  "captcha challenge title is detected",
+  adapter.detectBlock(
+    new JSDOM("<title>CAPTCHA</title><body>Please continue</body>").window.document,
+    new URL("https://www.naukri.com/dot-net-developer-jobs")
+  ),
+  "Naukri access block detected in page content.",
+  "captcha challenge"
 );
 check("expected widget fixture exists", Boolean(placeholderWidget), true, placeholderWidget && placeholderWidget.className);
 

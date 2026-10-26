@@ -127,10 +127,11 @@
         if (!values[keys.openedJobs] || typeof values[keys.openedJobs] !== "object") {
           initial[keys.openedJobs] = {};
         }
-        if (
-          values[keys.selectedTab] !== "Easy Apply"
-          && values[keys.selectedTab] !== "Company Apply"
-        ) {
+        const validSelectedTabs = new Set([
+          "All",
+          ...adapter.ui.tabs.map((tab) => tab.id)
+        ]);
+        if (!validSelectedTabs.has(values[keys.selectedTab])) {
           initial[keys.selectedTab] = "Easy Apply";
         }
         if (Object.keys(initial).length) {
@@ -417,6 +418,7 @@
       if (!adapter.matchesUrl(url)) {
         throw new Error("Open a Naukri search results page to start.");
       }
+      const startPageNumber = adapter.getCurrentPage(null, url);
       await ensureContentScript(tab.id);
 
       const runs = await getAllSiteRuns();
@@ -443,8 +445,9 @@
         runId,
         siteId,
         tabId: tab.id,
-        pageNumber: 1,
-        currentPage: 1,
+        pageNumber: startPageNumber,
+        currentPage: startPageNumber,
+        startPageNumber,
         searchUrl: url.href,
         capturedCount: 0,
         capturedJobIds: [],
@@ -464,8 +467,9 @@
         [keys.runState]: running,
         [keys.progress]: {
           runId,
-          pageNumber: 1,
-          currentPage: 1,
+          pageNumber: startPageNumber,
+          currentPage: startPageNumber,
+          startPageNumber,
           searchUrl: url.href,
           capturedCount: 0,
           updatedAt: new Date().toISOString()
@@ -591,7 +595,8 @@
                 : existing.companyApplyJob,
               questionnaireIdPresent: typeof record.questionnaireIdPresent === "boolean"
                 ? record.questionnaireIdPresent
-                : existing.questionnaireIdPresent
+                : existing.questionnaireIdPresent,
+              applyRedirectUrl: record.applyRedirectUrl || existing.applyRedirectUrl || null
             }),
             applyRedirectUrl: record.applyRedirectUrl || existing.applyRedirectUrl || null
           };

@@ -87,6 +87,43 @@ async function run() {
   assert.equal(navigationCollects, 1);
   assert.equal(navigated.pageNumber, 2);
   assert.equal(navigated.navigation, "navigated");
+
+  let historicalRecordCollectionCalls = 0;
+  const historicalRecordAdapter = {
+    limits: { maxPages: 1, maxJobsPerRun: 500 },
+    async collectPage() {
+      historicalRecordCollectionCalls += 1;
+      return { capturedCount: 515 };
+    },
+    getCurrentPage() {
+      return 1;
+    },
+    hasNextPage() {
+      return false;
+    },
+    async goNextPage() {
+      return "none";
+    }
+  };
+  let runCapturedCount = 0;
+  const historicalRecordContext = {
+    ...contextForRun,
+    pageNumber: 1,
+    async readStats() {
+      return { capturedCount: 515 };
+    },
+    async readRunCapturedCount() {
+      return runCapturedCount;
+    },
+    async finish() {},
+    setPage() {}
+  };
+  await loop.run(historicalRecordAdapter, historicalRecordContext);
+  assert.equal(historicalRecordCollectionCalls, 1);
+
+  runCapturedCount = 500;
+  await loop.run(historicalRecordAdapter, historicalRecordContext);
+  assert.equal(historicalRecordCollectionCalls, 1);
   console.log("Run-loop tests passed: adapter-owned collection and both pagination modes.");
 }
 

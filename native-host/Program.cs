@@ -24,6 +24,9 @@ internal static class Program
                 "list" => await ListAsync(request),
                 "upsertSetting" => await UpsertSettingAsync(request),
                 "listSettings" => await ListSettingsAsync(),
+                "updateJobStatus" => await UpdateJobStatusAsync(request),
+                "updateJobStatuses" => await UpdateJobStatusesAsync(request),
+                "listJobStatuses" => await ListJobStatusesAsync(request),
                 _ => throw new InvalidDataException("Unsupported native backup request.")
             };
             await WriteMessageAsync(Console.OpenStandardOutput(), response);
@@ -104,6 +107,201 @@ internal static class Program
         await stream.WriteAsync(bytes);
         stream.Flush(flushToDisk: true);
         return new JsonObject { ["ok"] = true, ["saved"] = true };
+    }
+
+    private static async Task<JsonObject> UpdateJobStatusAsync(JsonObject request)
+    {
+        var singleUpdate = new JsonArray
+        {
+            new JsonObject
+            {
+                ["jobId"] = request["jobId"]?.DeepClone(),
+                ["statusName"] = request["statusName"]?.DeepClone(),
+                ["value"] = request["value"]?.DeepClone()
+            }
+        };
+        var batchRequest = new JsonObject
+        {
+            ["siteId"] = request["siteId"]?.DeepClone(),
+            ["updates"] = singleUpdate
+        };
+        return await UpdateJobStatusesAsync(batchRequest);
+    }
+
+    private static async Task<JsonObject> UpdateJobStatusesAsync(JsonObject request)
+    {
+        var siteId = request["siteId"]?.GetValue<string>();
+        if (siteId is null || !SupportedSites.Contains(siteId))
+        {
+            throw new InvalidDataException("The job-status site ID is not supported.");
+        }
+        if (request["updates"] is not JsonArray updates || updates.Count is < 1 or > 1000)
+        {
+            throw new InvalidDataException("A bounded list of job-status updates is required.");
+        }
+
+        var entries = new List<byte[]>(updates.Count);
+        foreach (var updateNode in updates)
+        {
+            var update = updateNode?.AsObject()
+                ?? throw new InvalidDataException("A job-status update must be an object.");
+            var jobId = update["jobId"]?.GetValue<string>();
+            var statusName = update["statusName"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 256)
+            {
+                throw new InvalidDataException("The job-status job ID is invalid.");
+            }
+            if (statusName is not ("opened" or "hidden")
+                || update["value"] is not JsonValue statusValue
+                || !statusValue.TryGetValue<bool>(out var value))
+            {
+                throw new InvalidDataException("A boolean opened or hidden status is required.");
+            }
+            var entry = new JsonObject
+            {
+                ["kind"] = "status",
+                ["siteId"] = siteId,
+                ["jobId"] = jobId,
+                ["statusName"] = statusName,
+                ["value"] = value,
+                ["archivedAt"] = DateTimeOffset.UtcNow.ToString("O")
+            };
+            entries.Add(Encoding.UTF8.GetBytes(entry.ToJsonString() + "\n"));
+        }
+
+        await using var stream = await OpenAppendStreamWithRetryAsync(
+            FindBackupPath(),
+            FileShare.None
+        );
+        foreach (var bytes in entries)
+        {
+            await stream.WriteAsync(bytes);
+        }
+        stream.Flush(flushToDisk: true);
+        return new JsonObject { ["ok"] = true, ["saved"] = true };
+    }
+
+    private static async Task<JsonObject> ListJobStatusesAsync(JsonObject request)
+    {
+        var siteId = request["siteId"]?.GetValue<string>();
+        if (siteId is null || !SupportedSites.Contains(siteId))
+        {
+            throw new InvalidDataException("The job-status site ID is not supported.");
+        }
+
+        var latest = new Dictionary<string, (bool? Opened, bool? Hidden)>(StringComparer.Ordinal);
+        var path = FindBackupPath();
+        if (File.Exists(path))
+        {
+            var lineNumber = 0;
+            foreach (var line in await ReadArchiveLinesWithRetryAsync(path))
+            {
+                lineNumber++;
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+                JsonObject entry;
+                try
+                {
+                    entry = JsonNode.Parse(line)?.AsObject()
+                        ?? throw new InvalidDataException("The job-history archive line is not a JSON object.");
+                }
+                catch (Exception error)
+                {
+                    throw new InvalidDataException(
+                        $"The job-history archive is invalid at line {lineNumber}; it was left untouched.",
+                        error);
+                }
+
+                var kind = entry["kind"]?.GetValue<string>();
+                if (kind is not ("status" or "setting"))
+                {
+                    if (kind is null)
+                    {
+                        continue;
+                    }
+                    throw new InvalidDataException(
+                        $"The job-history archive contains an invalid entry at line {lineNumber}.");
+                }
+                if (kind == "setting")
+                {
+                    var settingKey = entry["key"]?.GetValue<string>();
+                    if (settingKey is null || !SupportedSettings.Contains(settingKey)
+                        || !entry.ContainsKey("value"))
+                    {
+                        throw new InvalidDataException(
+                            $"The job-history archive contains an invalid setting at line {lineNumber}.");
+                    }
+                    foreach (var settingStatusName in new[] { "opened", "hidden" })
+                    {
+                        if (!settingKey.Equals($"{settingStatusName}.{siteId}", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+                        var statusMap = entry["value"] as JsonObject
+                            ?? throw new InvalidDataException(
+                                $"The job-history archive contains invalid statuses at line {lineNumber}.");
+                        foreach (var (settingJobId, settingStatusValue) in statusMap)
+                        {
+                            if (string.IsNullOrWhiteSpace(settingJobId) || settingJobId.Length > 256
+                                || settingStatusValue is not JsonValue jsonStatus
+                                || !jsonStatus.TryGetValue<bool>(out var status))
+                            {
+                                throw new InvalidDataException(
+                                    $"The job-history archive contains invalid statuses at line {lineNumber}.");
+                            }
+                            var priorStatus = latest.GetValueOrDefault(settingJobId);
+                            latest[settingJobId] = settingStatusName == "opened"
+                                ? (status, priorStatus.Hidden)
+                                : (priorStatus.Opened, status);
+                        }
+                    }
+                    continue;
+                }
+                var entrySiteId = entry["siteId"]?.GetValue<string>();
+                var jobId = entry["jobId"]?.GetValue<string>();
+                var statusName = entry["statusName"]?.GetValue<string>();
+                if (entrySiteId is null || !SupportedSites.Contains(entrySiteId)
+                    || string.IsNullOrWhiteSpace(jobId) || jobId.Length > 256
+                    || statusName is not ("opened" or "hidden")
+                    || entry["value"] is not JsonValue statusValue
+                    || !statusValue.TryGetValue<bool>(out var value))
+                {
+                    throw new InvalidDataException(
+                        $"The job-history archive contains an invalid status at line {lineNumber}.");
+                }
+                if (entrySiteId != siteId)
+                {
+                    continue;
+                }
+
+                var existing = latest.GetValueOrDefault(jobId);
+                latest[jobId] = statusName == "opened"
+                    ? (value, existing.Hidden)
+                    : (existing.Opened, value);
+            }
+        }
+
+        var statuses = new JsonArray();
+        foreach (var (jobId, status) in latest.OrderBy(item => item.Key, StringComparer.Ordinal))
+        {
+            var item = new JsonObject { ["jobId"] = jobId };
+            if (status.Opened.HasValue)
+            {
+                item["opened"] = status.Opened.Value;
+            }
+            if (status.Hidden.HasValue)
+            {
+                item["hidden"] = status.Hidden.Value;
+            }
+            statuses.Add(item);
+            if (Encoding.UTF8.GetByteCount(statuses.ToJsonString()) > MaximumResponseBytes)
+            {
+                throw new InvalidDataException("The shared job statuses exceed the safe response size.");
+            }
+        }
+        return new JsonObject { ["ok"] = true, ["statuses"] = statuses };
     }
 
     private static async Task<JsonObject> ListSettingsAsync()
@@ -234,7 +432,7 @@ internal static class Program
                         error);
                 }
 
-                if (entry["kind"]?.GetValue<string>() == "setting")
+                if (entry["kind"]?.GetValue<string>() is "setting" or "status")
                 {
                     continue;
                 }
@@ -299,7 +497,9 @@ internal static class Program
         };
     }
 
-    private static async Task<FileStream> OpenAppendStreamWithRetryAsync(string path)
+    private static async Task<FileStream> OpenAppendStreamWithRetryAsync(
+        string path,
+        FileShare fileShare = FileShare.Read)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -309,7 +509,7 @@ internal static class Program
                     path,
                     FileMode.Append,
                     FileAccess.Write,
-                    FileShare.Read,
+                    fileShare,
                     bufferSize: 4096,
                     FileOptions.WriteThrough);
             }

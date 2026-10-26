@@ -101,6 +101,7 @@
         siteId: adapter.id,
         runId,
         event,
+        component: "content-script",
         details
       });
       if (!response || !response.ok) {
@@ -112,7 +113,7 @@
     diagnosticsWriteQueue = write.catch((error) => {
       debugLog("Could not save collector diagnostic", errorMessage(error));
     });
-    return write;
+    return diagnosticsWriteQueue;
   }
 
   function makeStopError() {
@@ -1440,6 +1441,7 @@
         ensureVisible: () => ensureVisible(runId),
         checkBlock: () => checkBlockingPage([]),
         readStats: () => awaitWithStop(runId, readStats()),
+        readRunCapturedCount: () => activeRunSavedCount,
         getContainer: () => selectors.getScrollableContainer(document, []),
         collectPageWork,
         goNextLinkedInPage: paginateToNextPage,
@@ -1553,51 +1555,6 @@
     }
   }
 
-  async function resumeSavedRun() {
-    try {
-      const values = await chrome.storage.local.get(STORAGE_KEYS.runState);
-      const state = values[STORAGE_KEYS.runState];
-      if (
-        !state
-        || typeof state.runId !== "string"
-        || (state.state !== "RUNNING" && state.state !== "PAGINATING")
-      ) {
-        return;
-      }
-      const savedSearchUrl = typeof state.searchUrl === "string"
-        ? normalizeSearchUrl(state.searchUrl)
-        : normalizeSearchUrl(window.location.href);
-      if (normalizeSearchUrl(window.location.href) !== savedSearchUrl) {
-        return;
-      }
-      if (activeRunId) {
-        return;
-      }
-      activeRunId = state.runId;
-      void runPage(state.runId, state).catch(async (error) => {
-        const message = `Could not resume saved run: ${errorMessage(error)}`;
-        debugLog(message);
-        if (activeRunId === state.runId) {
-          activeRunId = null;
-        }
-        try {
-          const jobs = await readStoredJobs();
-          await writeTerminalProgress(
-            state.runId,
-            Number.isInteger(state.pageNumber) ? state.pageNumber : 1,
-            getStats(jobs),
-            "ERROR",
-            message
-          );
-        } catch (persistError) {
-          debugLog("Could not persist resume error", errorMessage(persistError));
-        }
-      });
-    } catch (error) {
-      debugLog("Could not resume saved run", errorMessage(error));
-    }
-  }
-
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === "local" && changes["debug.linkedin"]) {
       loggingEnabled = changes["debug.linkedin"].newValue === true;
@@ -1643,7 +1600,11 @@
       return false;
     }
     if (message.type === "PING") {
-      sendResponse({ ok: message.siteId === undefined || message.siteId === adapter.id });
+      const connected = message.siteId === undefined || message.siteId === adapter.id;
+      sendResponse({
+        ok: connected,
+        activeRunId: connected ? activeRunId : null
+      });
       return false;
     }
     if (message.type === "STOP_RUN") {
@@ -1722,5 +1683,4 @@
     return true;
   });
 
-  void resumeSavedRun();
 })();

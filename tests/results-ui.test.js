@@ -113,7 +113,7 @@ class FakeElement {
   }
 }
 
-function createPage(storage, search = "") {
+function createPage(storage, search = "", sharedStatusMessage = null) {
   const legacyJobs = storage.jobsById || {};
   storage.records = {
     ...(storage.records || {}),
@@ -145,8 +145,17 @@ function createPage(storage, search = "") {
     "export-button",
     "skip-titles-button",
     "view-logs-button",
+    "flow-logging-button",
     "flow-logging-toggle",
     "flow-logging-label",
+    "flow-logging-dialog",
+    "flow-logging-close",
+    "flow-logging-save",
+    "flow-logging-error",
+    "flow-log-site-results",
+    "flow-log-site-linkedin",
+    "flow-log-site-naukri",
+    "flow-log-site-indeed",
     "logs-dialog",
     "logs-heading",
     "logs-summary",
@@ -260,6 +269,9 @@ function createPage(storage, search = "") {
     }
   };
   const chrome = {
+    ...(sharedStatusMessage
+      ? { runtime: { sendMessage: sharedStatusMessage } }
+      : {}),
     storage: {
       local: {
         async get(keys) {
@@ -315,6 +327,7 @@ function createPage(storage, search = "") {
   for (const file of [
     "config.js",
     "src/core/storage.js",
+    "src/core/native-backup.js",
     "src/sites/linkedin/selectors.js",
     "src/sites/linkedin/metadata.js",
     "src/sites/linkedin/adapter.js",
@@ -348,6 +361,9 @@ function createPage(storage, search = "") {
     blobsByUrl,
     updateStorage(key, value) {
       return chrome.storage.local.set({ [key]: value });
+    },
+    refreshSharedJobStatuses() {
+      return vm.runInContext("refreshSharedJobStatuses()", context);
     },
     refreshPostedAges(now) {
       return vm.runInContext(`refreshPostedAges(${now})`, context);
@@ -429,6 +445,75 @@ async function run() {
   assert.equal(elements.get("experience-filter-control").hidden, true);
   assert.equal(elements.get("skip-titles-button").hidden, false);
   assert.equal(elements.get("brand-link").href, "results.html?site=linkedin");
+
+  const startupRecordsStorage = {
+    records: {},
+    "debug.linkedin": true,
+    "ui.lastSite": "linkedin",
+    "ui.linkedin.selectedTab": "All"
+  };
+  const startupRecordsPage = createPage(startupRecordsStorage, "", async (message) => {
+    assert.equal(message.type, "SYNC_JOB_STATUSES");
+    startupRecordsStorage.records["linkedin:startup-record"] = job("startup-record", "Easy Apply");
+    return { ok: true, openedJobs: {}, hiddenJobs: {} };
+  });
+  await settle();
+  await startupRecordsPage.refreshSharedJobStatuses();
+  await settle();
+  assert.equal(startupRecordsPage.elements.get("linkedin-site-count").textContent, "1");
+  assert.equal(startupRecordsPage.elements.get("summary-total").textContent, "1");
+  assert.equal(startupRecordsPage.elements.get("all-tab").textContent, "All (1)");
+  assert.equal(startupRecordsPage.elements.get("job-table-body").children.length, 1);
+  const startupFlowEvents = startupRecordsStorage["diagnostics.linkedin"].map((entry) => entry.event);
+  assert.ok(startupFlowEvents.includes("results_page_start"));
+  assert.ok(startupFlowEvents.includes("records_before_status_sync"));
+  assert.ok(startupFlowEvents.includes("status_sync_succeeded"));
+  assert.ok(startupFlowEvents.includes("records_after_status_sync"));
+  assert.ok(startupFlowEvents.includes("results_page_ready"));
+  const beforeSyncEvent = startupRecordsStorage["diagnostics.linkedin"].find(
+    (entry) => entry.event === "records_before_status_sync"
+  );
+  const afterSyncEvent = startupRecordsStorage["diagnostics.linkedin"].find(
+    (entry) => entry.event === "records_after_status_sync"
+  );
+  assert.equal(beforeSyncEvent.recordCounts.linkedin, 0);
+  assert.equal(afterSyncEvent.selectedSiteCount, 1);
+  assert.ok(Number.isFinite(beforeSyncEvent.durationMs));
+  assert.ok(Number.isFinite(afterSyncEvent.elapsedMs));
+  const syncEvent = startupRecordsStorage["diagnostics.linkedin"].find(
+    (entry) => entry.event === "status_sync_succeeded"
+  );
+  assert.ok(Number.isFinite(syncEvent.durationMs));
+  await startupRecordsPage.updateStorage("records", {
+    ...startupRecordsStorage.records,
+    "linkedin:later-record": job("later-record", "Easy Apply")
+  });
+  await settle();
+  assert.ok(
+    startupRecordsStorage["diagnostics.linkedin"].some(
+      (entry) => entry.event === "records_storage_changed"
+    )
+  );
+
+  let finishDelayedStatusSync;
+  const delayedStatusStorage = {
+    records: { "linkedin:delayed-sync-record": job("delayed-sync-record", "Easy Apply") },
+    "debug.linkedin": true,
+    "ui.linkedin.selectedTab": "All"
+  };
+  const delayedStatusPage = createPage(delayedStatusStorage, "", () => (
+    new Promise((resolve) => {
+      finishDelayedStatusSync = resolve;
+    })
+  ));
+  await settle();
+  assert.equal(delayedStatusPage.elements.get("job-table-body").children.length, 1);
+  assert.ok(delayedStatusStorage["diagnostics.linkedin"].some(
+    (entry) => entry.event === "results_page_ready"
+  ));
+  finishDelayedStatusSync({ ok: true, openedJobs: {}, hiddenJobs: {} });
+  await settle();
+  assert.equal(delayedStatusPage.elements.get("job-table-body").children.length, 1);
 
   const roleSortPage = createPage({
     records: {
@@ -516,6 +601,7 @@ async function run() {
   await findAll(openedLinkedInRow, (item) => item.getAttribute("aria-label") === "Mark 101 as not opened")[0]
     .dispatch("click");
   await settle();
+  assert.equal(storage["opened.linkedin"]["101"], false);
   await elements.get("view-hidden-jobs").dispatch("click");
   await settle();
   await elements.get("easy-tab").dispatch("click");
@@ -622,6 +708,17 @@ async function run() {
     applyType: "Direct Apply",
     url: "https://www.naukri.com/job-listings-direct-apply-021026012534"
   };
+  const naukriUnclassified = {
+    ...naukriConsultant,
+    jobId: "021026012535",
+    title: "Unknown Apply Evidence Role",
+    company: "Unclassified Employer",
+    companyApplyJob: null,
+    questionnaireIdPresent: null,
+    applyRedirectUrl: null,
+    applyType: "Naukri",
+    url: "https://www.naukri.com/job-listings-unknown-021026012535"
+  };
   const naukriStorage = {
     records: {
       "linkedin:101": job("101", "Easy Apply"),
@@ -653,9 +750,41 @@ async function run() {
     naukriPage.elements.get("column-headings").children.map((heading) => heading.textContent),
     ["", "#", "Role", "Company", "Location", "Exp", "Salary", "Posted↓", "Apply"]
   );
-  assert.equal(naukriPage.elements.get("easy-tab").textContent, "Easy Apply (1)");
-  assert.equal(naukriPage.elements.get("direct-tab").textContent, "Direct Apply (1)");
+  assert.equal(naukriPage.elements.get("easy-tab").textContent, "Easy Apply (2)");
+  assert.equal(naukriPage.elements.get("summary-easy").textContent, "2");
+  assert.equal(naukriPage.elements.get("direct-tab").hidden, true);
   assert.equal(naukriPage.elements.get("company-tab").textContent, "Company Apply (2)");
+  const unclassifiedNaukriPage = createPage({
+    records: { "naukri:021026012535": naukriUnclassified },
+    "opened.naukri": {},
+    "runs.naukri": {
+      runId: "naukri-unclassified-run",
+      state: "DONE",
+      startedAt: "2026-10-17T10:00:00.000Z",
+      capturedCount: 1
+    },
+    "ui.naukri.selectedTab": "All"
+  }, "?site=naukri");
+  await settle();
+  assert.equal(unclassifiedNaukriPage.elements.get("easy-tab").textContent, "Easy Apply (0)");
+  assert.equal(unclassifiedNaukriPage.elements.has("unclassified-tab"), false);
+  assert.equal(unclassifiedNaukriPage.elements.get("all-tab").textContent, "All (1)");
+  await unclassifiedNaukriPage.elements.get("all-tab").dispatch("click");
+  assert.deepEqual(
+    unclassifiedNaukriPage.elements.get("job-table-body").children.map((row) => row.getAttribute("aria-label")),
+    ["Unknown Apply Evidence Role at Unclassified Employer"]
+  );
+  await settle();
+  assert.equal(unclassifiedNaukriPage.storage["ui.naukri.selectedTab"], "All");
+  await unclassifiedNaukriPage.elements.get("export-button").dispatch("click");
+  await settle();
+  assert.equal(unclassifiedNaukriPage.downloadedFiles.length, 1);
+  const naukriReport = await unclassifiedNaukriPage.downloadedFiles[0].blob.text();
+  assert.match(naukriReport, /id="all-tab"/);
+  assert.doesNotMatch(naukriReport, /id="unclassified-tab"|Needs verification/);
+  const naukriReportScript = naukriReport.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(naukriReportScript);
+  assert.doesNotThrow(() => new vm.Script(naukriReportScript[1]));
 
   const naukriPostedSortPage = createPage({
     records: {
@@ -664,21 +793,24 @@ async function run() {
         jobId: "8101",
         title: "One Week Old",
         postedText: "1 week ago",
-        postedDateEstimate: "2026-10-20T10:00:00.000Z"
+        postedApprox: false,
+        postedDateEstimate: "2026-10-09T10:00:00.000Z"
       },
       "naukri:8102": {
         ...naukriPrimary,
         jobId: "8102",
         title: "Four Days Old",
         postedText: "4 days ago",
-        postedDateEstimate: "2026-10-10T10:00:00.000Z"
+        postedApprox: false,
+        postedDateEstimate: "2026-10-12T10:00:00.000Z"
       },
       "naukri:8103": {
         ...naukriPrimary,
         jobId: "8103",
         title: "Two Days Old",
         postedText: "2 days ago",
-        postedDateEstimate: "2026-10-12T10:00:00.000Z"
+        postedApprox: false,
+        postedDateEstimate: "2026-10-14T10:00:00.000Z"
       }
     },
     "ui.lastSite": "naukri",
@@ -811,7 +943,16 @@ async function run() {
   naukriPage.elements.get("filter-location-bengaluru").checked = false;
   await naukriPage.elements.get("filter-location-bengaluru").dispatch("change");
   await settle();
-  const experienceFilterRecords = ["0-2 Yrs", "3 Yrs", "4-5 Yrs", "6+ Yrs", "7 Yrs", "2-5 Yrs"];
+  const experienceFilterRecords = [
+    "0-2 Yrs",
+    "3 Yrs",
+    "4-5 Yrs",
+    "6+ Yrs",
+    "7 Yrs",
+    "2-5 Yrs",
+    "6-10 Yrs",
+    "5-8 Yrs"
+  ];
   const experienceFilterPage = createPage({
     records: Object.fromEntries(experienceFilterRecords.map((experience, index) => {
       const id = String(9201 + index);
@@ -854,35 +995,42 @@ async function run() {
   fourToFive.checked = true;
   await fourToFive.dispatch("change");
   await settle();
-  assert.equal(experienceFilterPage.elements.get("job-table-body").children.length, 2);
+  assert.equal(experienceFilterPage.elements.get("job-table-body").children.length, 3);
   fourToFive.checked = false;
   const sixPlus = experienceFilterPage.elements.get("filter-experience-6-plus");
   sixPlus.checked = true;
   await sixPlus.dispatch("change");
   await settle();
-  assert.equal(experienceFilterPage.elements.get("job-table-body").children.length, 2);
+  assert.equal(experienceFilterPage.elements.get("job-table-body").children.length, 3);
+  assert.deepEqual(
+    experienceFilterPage.elements.get("job-table-body").children.map((row) => row.getAttribute("aria-label")),
+    [
+      "Experience 6+ Yrs at R&D <Systems>",
+      "Experience 7 Yrs at R&D <Systems>",
+      "Experience 6-10 Yrs at R&D <Systems>"
+    ]
+  );
   sixPlus.checked = false;
   await sixPlus.dispatch("change");
   await settle();
-  assert.match(naukriPage.elements.get("search").placeholder, /agency, or skills/);
+  assert.match(naukriPage.elements.get("search").placeholder, /title, company, location, or skill:/);
   assert.ok(naukriPage.elements.get("run-subtitle").hidden);
   assert.equal(naukriPage.elements.get("site-run-footer").hidden, false);
   assert.equal(naukriPage.elements.get("experience-filter-control").hidden, false);
   assert.match(naukriPage.elements.get("site-run-footer").textContent, /4 captured/);
   let naukriRows = naukriPage.elements.get("job-table-body").children;
   assert.equal(naukriRows.length, 2);
-  assert.equal(naukriPage.elements.get("direct-tab").hidden, false);
-  await naukriPage.elements.get("direct-tab").dispatch("click");
-  assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
-  assert.match(
-    findAll(naukriPage.elements.get("job-table-body").children[0], (item) => item.className === "role-title")[0].textContent,
-    /Direct Apply Engineer/
-  );
+  assert.equal(naukriPage.elements.get("direct-tab").hidden, true);
+  await naukriPage.elements.get("easy-tab").dispatch("click");
+  assert.equal(naukriPage.elements.get("job-table-body").children.length, 2);
+  assert.ok(naukriPage.elements.get("job-table-body").children.some((row) => (
+    findAll(row, (item) => item.className === "role-title")[0].textContent === "Direct Apply Engineer"
+  )));
   await naukriPage.elements.get("company-tab").dispatch("click");
-  assert.equal(
-    findAll(naukriRows[0], (item) => item.className === "role-title")[0].textContent,
-    "<Senior & Staff Engineer>"
-  );
+  assert.ok(naukriRows.some((row) => (
+    findAll(row, (item) => item.className === "role-title")[0].textContent
+      === "<Senior & Staff Engineer>"
+  )));
   const specialRow = naukriRows.find((row) => (
     findAll(row, (item) => item.className === "role-title")[0].textContent === naukriPrimary.title
   ));
@@ -929,17 +1077,17 @@ async function run() {
   naukriPage.elements.get("search").value = "R&D <Systems>";
   await naukriPage.elements.get("search").dispatch("input");
   assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
-  naukriPage.elements.get("search").value = "Systems & Design";
+  naukriPage.elements.get("search").value = "skill:Systems & Design";
   await naukriPage.elements.get("search").dispatch("input");
   assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
-  naukriPage.elements.get("search").value = "C++ <x>";
+  naukriPage.elements.get("search").value = "skill:C++ <x>";
   await naukriPage.elements.get("search").dispatch("input");
   assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
   assert.equal(naukriPage.elements.get("job-table-body").children[0].getAttribute("aria-label")
     .includes("<Senior & Staff Engineer>"), true);
   naukriPage.elements.get("search").value = "Talent & Co";
   await naukriPage.elements.get("search").dispatch("input");
-  assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
+  assert.equal(naukriPage.elements.get("job-table-body").children.length, 0);
   naukriPage.elements.get("search").value = "";
   await naukriPage.elements.get("company-sort").dispatch("click");
   assert.equal(
@@ -977,12 +1125,92 @@ async function run() {
     "ui.naukri.selectedTab": "All"
   }, "?site=naukri");
   await settle();
-  naukriSearchPage.elements.get("search").value = "Java";
+  naukriSearchPage.elements.get("search").value = "skill:Java";
   await naukriSearchPage.elements.get("search").dispatch("input");
   assert.deepEqual(
     naukriSearchPage.elements.get("job-table-body").children.map((row) => row.getAttribute("aria-label")),
     ["Backend Engineer at Backend Systems"]
   );
+
+  for (const siteId of ["linkedin", "naukri", "indeed"]) {
+    const siteSearchPage = createPage({
+      records: {
+        [`${siteId}:search-role`]: job("search-role", "Easy Apply", {
+          siteId,
+          title: "Backend Engineer",
+          company: "Acme",
+          location: "Bengaluru",
+          skills: [".NET", "SQL"],
+          postedText: "Today",
+          postedDateEstimate: "2026-10-23T10:00:00.000Z"
+        }),
+        [`${siteId}:search-company`]: job("search-company", "Easy Apply", {
+          siteId,
+          title: "QA Specialist",
+          company: ".NET Labs",
+          location: "Remote",
+          skills: ["Testing"],
+          postedText: "1 day ago",
+          postedDateEstimate: "2026-10-22T10:00:00.000Z"
+        }),
+        [`${siteId}:search-location`]: job("search-location", "Easy Apply", {
+          siteId,
+          title: "Product Analyst",
+          company: "Other Inc",
+          location: "Hyderabad",
+          skills: ["Finance"],
+          postedText: "2 days ago",
+          postedDateEstimate: "2026-10-21T10:00:00.000Z"
+        })
+      },
+      [`ui.${siteId}.selectedTab`]: "All",
+      [`opened.${siteId}`]: {}
+    }, `?site=${siteId}`);
+    await settle();
+    const search = siteSearchPage.elements.get("search");
+    const resultLabels = () => siteSearchPage.elements.get("job-table-body").children
+      .map((row) => row.getAttribute("aria-label"));
+    search.value = "Backend";
+    await search.dispatch("input");
+    assert.deepEqual(resultLabels(), ["Backend Engineer at Acme"], `${siteId} searches title`);
+    search.value = "Remote";
+    await search.dispatch("input");
+    assert.deepEqual(resultLabels(), ["QA Specialist at .NET Labs"], `${siteId} searches location`);
+    search.value = "skill:.Net";
+    await search.dispatch("input");
+    assert.deepEqual(resultLabels(), ["Backend Engineer at Acme"], `${siteId} searches only skills`);
+    search.value = ".Net";
+    await search.dispatch("input");
+    assert.deepEqual(resultLabels(), ["QA Specialist at .NET Labs"], `${siteId} default search excludes skills`);
+  }
+
+  const independentSiteSortPage = createPage({
+    records: {
+      "linkedin:sort": job("sort", "Easy Apply", { title: "LinkedIn role" }),
+      "naukri:sort": { ...naukriPrimary, jobId: "sort", title: "Naukri role" },
+      "indeed:sort": {
+        ...job("sort", "Easy Apply"),
+        siteId: "indeed",
+        title: "Indeed role",
+        url: "https://in.indeed.com/viewjob?jk=0123456789abcdef"
+      }
+    },
+    "ui.lastSite": "linkedin",
+    "ui.linkedin.selectedTab": "All",
+    "opened.linkedin": {},
+    "opened.naukri": {},
+    "opened.indeed": {}
+  });
+  await settle();
+  assert.equal(independentSiteSortPage.elements.get("posted-header").attributes["aria-sort"], "descending");
+  await independentSiteSortPage.elements.get("posted-sort").dispatch("click");
+  assert.equal(independentSiteSortPage.elements.get("posted-header").attributes["aria-sort"], "ascending");
+  await independentSiteSortPage.elements.get("indeed-site").dispatch("click");
+  await settle();
+  assert.equal(independentSiteSortPage.elements.get("posted-header").attributes["aria-sort"], "descending");
+  await independentSiteSortPage.elements.get("linkedin-site").dispatch("click");
+  await settle();
+  assert.equal(independentSiteSortPage.elements.get("posted-header").attributes["aria-sort"], "ascending");
 
   const hiddenJobsStorage = {
     records: Object.fromEntries(
@@ -1076,10 +1304,7 @@ async function run() {
   assert.equal(hideJobsPage.elements.get("hide-selected-jobs").disabled, true);
   assert.equal(hideJobsPage.elements.get("clear-hidden-jobs").disabled, false);
   assert.equal(hideJobsPage.elements.get("view-hidden-jobs").disabled, false);
-  assert.deepEqual(Object.keys(hiddenJobsStorage["hidden.naukri"]), [
-    findAll(selectedRow, (item) => item.className === "apply-link")[0].href
-      .split("job=")[1]
-  ]);
+  assert.equal(Object.keys(hiddenJobsStorage["hidden.naukri"]).length, 1);
   await hideJobsPage.elements.get("clear-hidden-jobs").dispatch("click");
   await settle();
   assert.equal(Object.keys(hiddenJobsStorage["hidden.naukri"]).length, 1);
@@ -1107,10 +1332,74 @@ async function run() {
   assert.deepEqual(Array.from(hiddenJobsStorage["ui.naukri.filters"].experienceYears), []);
   assert.equal(hiddenJobsStorage["ui.naukri.selectedTab"], "All");
 
+  const failedHidePage = createPage({
+    records: {
+      "naukri:failed-hide": {
+        ...naukriPrimary,
+        jobId: "failed-hide",
+        title: "Retryable Hide",
+        postedApprox: false
+      }
+    },
+    "ui.lastSite": "naukri",
+    "ui.naukri.selectedTab": "All",
+    "opened.naukri": {},
+    "hidden.naukri": {}
+  }, "?site=naukri", async (message) => (
+    message.updates
+      ? { ok: false, error: "Status archive is unavailable." }
+      : { ok: true, openedJobs: {}, hiddenJobs: {} }
+  ));
+  await settle();
+  const failedHideSelection = findAll(
+    failedHidePage.elements.get("job-table-body").children[0],
+    (item) => item.className === "job-selection"
+  )[0];
+  failedHideSelection.checked = true;
+  await failedHideSelection.dispatch("change");
+  await failedHidePage.elements.get("hide-selected-jobs").dispatch("click");
+  await settle();
+  assert.equal(failedHidePage.storage["hidden.naukri"]["failed-hide"], true);
+  assert.equal(failedHidePage.elements.get("job-table-body").children.length, 0);
+  assert.equal(failedHidePage.elements.get("hide-selected-jobs").disabled, true);
+  assert.match(
+    failedHidePage.elements.get("feedback").textContent,
+    /Jobs are hidden locally, but could not sync their status to the shared archive: Status archive is unavailable\./
+  );
+
+  const hangingHidePage = createPage({
+    records: {
+      "naukri:pending-hide": {
+        ...naukriPrimary,
+        jobId: "pending-hide",
+        title: "Pending Hide",
+        postedApprox: false
+      }
+    },
+    "ui.lastSite": "naukri",
+    "ui.naukri.selectedTab": "All",
+    "opened.naukri": {},
+    "hidden.naukri": {}
+  }, "?site=naukri", async () => new Promise(() => {}));
+  await settle();
+  const pendingHideSelection = findAll(
+    hangingHidePage.elements.get("job-table-body").children[0],
+    (item) => item.className === "job-selection"
+  )[0];
+  pendingHideSelection.checked = true;
+  await pendingHideSelection.dispatch("change");
+  await hangingHidePage.elements.get("hide-selected-jobs").dispatch("click");
+  assert.equal(hangingHidePage.elements.get("job-table-body").children.length, 0);
+  assert.equal(hangingHidePage.elements.get("hide-selected-jobs").disabled, true);
+  await settle();
+  assert.equal(hangingHidePage.storage["hidden.naukri"]["pending-hide"], true);
+
   await naukriPage.elements.get("linkedin-site").dispatch("click");
   await settle();
   assert.equal(naukriStorage["ui.lastSite"], "linkedin");
-  assert.equal(naukriPage.location.assignedHref, "https://extension.test/results.html");
+  assert.equal(naukriPage.history.replacedHref, "https://extension.test/results.html?site=linkedin");
+  assert.equal(naukriStorage["ui.linkedin.selectedTab"], "All");
+  assert.equal(naukriPage.elements.get("all-tab").getAttribute("aria-selected"), "true");
   assert.equal(naukriStorage["opened.linkedin"]["101"], true);
   assert.equal(JSON.stringify(naukriStorage.records["linkedin:101"]), linkedinRecordBeforeSiteSwitch);
 
@@ -1242,6 +1531,7 @@ async function run() {
   assert.equal(indeedPage.elements.get("indeed-site").getAttribute("aria-pressed"), "true");
   assert.equal(indeedPage.elements.get("indeed-site-count").textContent, "2");
   assert.equal(indeedPage.elements.get("brand-link").href, "results.html?site=indeed");
+  assert.equal(indeedPage.history.replacedHref, "https://extension.test/results.html?site=indeed");
   assert.equal(indeedPage.elements.get("job-table-body").children.length, 2);
   assert.equal(indeedPage.elements.get("easy-tab").textContent, "Easy Apply (1)");
   assert.equal(indeedPage.elements.get("company-tab").textContent, "Company Apply (1)");
@@ -1319,26 +1609,50 @@ async function run() {
     }, `?site=${siteId}`);
     await settle();
     assert.equal(platformSettingsPage.elements.get("skip-titles-button").hidden, false);
-    assert.equal(platformSettingsPage.elements.get("flow-logging-label").textContent, `Flow logs (${siteLabel})`);
+    await platformSettingsPage.elements.get("settings-button").dispatch("click");
+    await platformSettingsPage.elements.get("flow-logging-button").dispatch("click");
+    await settle();
+    assert.equal(platformSettingsPage.elements.get("flow-logging-dialog").open, true);
+    assert.equal(platformSettingsPage.elements.get(`flow-log-site-${siteId}`).checked, true);
+    assert.equal(platformSettingsPage.elements.get("flow-logging-label").textContent, `Enable flow logging for ${siteLabel}`);
     assert.equal(platformSettingsPage.elements.get("flow-logging-toggle").checked, true);
+    const flowLogsBeforeDisable = JSON.stringify(platformSettingsPage.storage[`diagnostics.${siteId}`]);
     platformSettingsPage.elements.get("flow-logging-toggle").checked = false;
-    await platformSettingsPage.elements.get("flow-logging-toggle").dispatch("change");
+    await platformSettingsPage.elements.get("flow-logging-save").dispatch("click");
     await settle();
     assert.equal(platformSettingsPage.storage[`debug.${siteId}`], false, `${siteId} flow logging toggle was not persisted`);
-    assert.equal(platformSettingsPage.storage[`diagnostics.${siteId}`].length, 1);
+    assert.equal(
+      JSON.stringify(platformSettingsPage.storage[`diagnostics.${siteId}`]),
+      flowLogsBeforeDisable,
+      `${siteId} flow logs were changed when logging was disabled`
+    );
+    await platformSettingsPage.elements.get("flow-logging-button").dispatch("click");
+    await settle();
     platformSettingsPage.elements.get("flow-logging-toggle").checked = true;
-    await platformSettingsPage.elements.get("flow-logging-toggle").dispatch("change");
+    await platformSettingsPage.elements.get("flow-logging-save").dispatch("click");
     await settle();
     assert.equal(platformSettingsPage.storage[`debug.${siteId}`], true, `${siteId} flow logging was not enabled`);
-    assert.deepEqual(
-      JSON.parse(JSON.stringify(platformSettingsPage.storage[`diagnostics.${siteId}`])),
-      [],
-      `${siteId} diagnostics were not cleared when flow logging was enabled`
+    assert.equal(platformSettingsPage.storage[`diagnostics.${siteId}`].length, 1);
+    assert.equal(
+      platformSettingsPage.storage[`diagnostics.${siteId}`][0].event,
+      "flow_logging_settings_saved",
+      `${siteId} diagnostics were not cleared before logging the enabled state`
     );
-    await platformSettingsPage.elements.get("settings-button").dispatch("click");
-    await platformSettingsPage.elements.get("view-logs-button").dispatch("click");
+    const reloadedSettingsPage = createPage(platformSettingsPage.storage, `?site=${siteId}`);
     await settle();
-    assert.equal(platformSettingsPage.elements.get("logs-content").value, "No logs yet.");
+    await reloadedSettingsPage.elements.get("settings-button").dispatch("click");
+    await reloadedSettingsPage.elements.get("flow-logging-button").dispatch("click");
+    await settle();
+    assert.equal(reloadedSettingsPage.elements.get(`flow-log-site-${siteId}`).checked, true);
+    assert.equal(reloadedSettingsPage.elements.get("flow-logging-toggle").checked, true);
+    await reloadedSettingsPage.elements.get("flow-logging-close").dispatch("click");
+    await reloadedSettingsPage.elements.get("settings-button").dispatch("click");
+    await reloadedSettingsPage.elements.get("view-logs-button").dispatch("click");
+    await settle();
+    assert.match(
+      reloadedSettingsPage.elements.get("logs-content").value,
+      /"event": "results_page_start"/
+    );
     await platformSettingsPage.elements.get("settings-button").dispatch("click");
     await platformSettingsPage.elements.get("skip-titles-button").dispatch("click");
     assert.equal(
@@ -1353,6 +1667,79 @@ async function run() {
       ["Existing exact title", `${siteLabel} exact title`]
     );
   }
+
+  const chosenLogPlatformStorage = {
+    "ui.lastSite": "linkedin",
+    "debug.linkedin": false,
+    "debug.indeed": true,
+    "diagnostics.indeed": []
+  };
+  const chooseLogPlatformPage = createPage(chosenLogPlatformStorage);
+  await settle();
+  await chooseLogPlatformPage.elements.get("settings-button").dispatch("click");
+  await chooseLogPlatformPage.elements.get("flow-logging-button").dispatch("click");
+  await settle();
+  chooseLogPlatformPage.elements.get("flow-log-site-linkedin").checked = false;
+  chooseLogPlatformPage.elements.get("flow-log-site-indeed").checked = true;
+  await chooseLogPlatformPage.elements.get("flow-log-site-indeed").dispatch("change");
+  await settle();
+  assert.equal(chooseLogPlatformPage.elements.get("flow-logging-toggle").checked, true);
+  await chooseLogPlatformPage.elements.get("flow-logging-save").dispatch("click");
+  await settle();
+  assert.equal(chosenLogPlatformStorage["ui.flowLogSite"], "indeed");
+  assert.equal(chosenLogPlatformStorage["debug.indeed"], true);
+  const chosenLogPlatformReload = createPage(chosenLogPlatformStorage);
+  await settle();
+  await chosenLogPlatformReload.elements.get("settings-button").dispatch("click");
+  await chosenLogPlatformReload.elements.get("flow-logging-button").dispatch("click");
+  await settle();
+  assert.equal(chosenLogPlatformReload.elements.get("flow-log-site-indeed").checked, true);
+  assert.equal(chosenLogPlatformReload.elements.get("flow-logging-toggle").checked, true);
+  assert.ok(chosenLogPlatformStorage["diagnostics.indeed"].some(
+    (entry) => entry.component === "results-page" && entry.siteId === "indeed"
+  ));
+  assert.equal(chosenLogPlatformStorage["diagnostics.linkedin"], undefined);
+  await chosenLogPlatformReload.elements.get("flow-logging-close").dispatch("click");
+  await chosenLogPlatformReload.elements.get("settings-button").dispatch("click");
+  await chosenLogPlatformReload.elements.get("view-logs-button").dispatch("click");
+  await settle();
+  assert.equal(chosenLogPlatformReload.elements.get("logs-heading").textContent, "Indeed flow logs");
+
+  const resultsPageLogsStorage = {
+    "ui.lastSite": "linkedin",
+    "debug.linkedin": false
+  };
+  const resultsPageLogs = createPage(resultsPageLogsStorage);
+  await settle();
+  await resultsPageLogs.elements.get("settings-button").dispatch("click");
+  await resultsPageLogs.elements.get("flow-logging-button").dispatch("click");
+  await settle();
+  resultsPageLogs.elements.get("flow-log-site-linkedin").checked = false;
+  resultsPageLogs.elements.get("flow-log-site-results").checked = true;
+  await resultsPageLogs.elements.get("flow-log-site-results").dispatch("change");
+  await settle();
+  resultsPageLogs.elements.get("flow-logging-toggle").checked = true;
+  await resultsPageLogs.elements.get("flow-logging-save").dispatch("click");
+  await settle();
+  assert.equal(resultsPageLogsStorage["ui.flowLogSite"], "results");
+  assert.equal(resultsPageLogsStorage["debug.results-page"], true);
+  assert.ok(resultsPageLogsStorage["diagnostics.results-page"].some(
+    (entry) => entry.component === "results-page" && entry.siteId === "results"
+  ));
+  assert.equal(resultsPageLogsStorage["diagnostics.linkedin"], undefined);
+  const resultsPageLogsReload = createPage(resultsPageLogsStorage);
+  await settle();
+  await resultsPageLogsReload.elements.get("settings-button").dispatch("click");
+  await resultsPageLogsReload.elements.get("flow-logging-button").dispatch("click");
+  await settle();
+  assert.equal(resultsPageLogsReload.elements.get("flow-log-site-results").checked, true);
+  assert.equal(resultsPageLogsReload.elements.get("flow-logging-toggle").checked, true);
+  await resultsPageLogsReload.elements.get("flow-logging-close").dispatch("click");
+  await resultsPageLogsReload.elements.get("settings-button").dispatch("click");
+  await resultsPageLogsReload.elements.get("view-logs-button").dispatch("click");
+  await settle();
+  assert.equal(resultsPageLogsReload.elements.get("logs-heading").textContent, "Results Page flow logs");
+
   await indeedPage.elements.get("easy-tab").dispatch("click");
   assert.equal(indeedPage.elements.get("job-table-body").children.length, 1);
   indeedPage.elements.get("filter-location-other").checked = true;
@@ -1455,6 +1842,14 @@ async function run() {
   assert.equal(visitedRows[0].getAttribute("aria-label"), "Visited Indeed Role at Indeed Company");
   assert.equal(findAll(visitedRows[0], (item) => item.className.includes("visited-chip"))[0].textContent, "Visited");
   assert.equal(indeedVisitedPage.storage["opened.indeed"]["6123456789abcdef"], undefined);
+  await findAll(
+    visitedRows[0],
+    (item) => item.getAttribute("aria-label") === "Mark 6123456789abcdef as not opened"
+  )[0].dispatch("click");
+  await settle();
+  assert.equal(indeedVisitedPage.storage["opened.indeed"]["6123456789abcdef"], false);
+  await indeedVisitedPage.elements.get("view-hidden-jobs").dispatch("click");
+  assert.equal(indeedVisitedPage.elements.get("job-table-body").children.length, 2);
 
   const indeedCompanyRecord = {
     siteId: "indeed",
@@ -1578,7 +1973,8 @@ async function run() {
   assert.equal(indeedPage.elements.get("job-table-body").children.length, 1);
   await indeedPage.elements.get("naukri-site").dispatch("click");
   await settle();
-  assert.equal(indeedPage.location.assignedHref, "https://extension.test/results.html");
+  assert.equal(indeedPage.location.assignedHref, undefined);
+  assert.equal(indeedPage.history.replacedHref, "https://extension.test/results.html?site=naukri");
 
   const postedSortPage = createPage({
     records: {
@@ -1700,6 +2096,7 @@ async function run() {
   assert.match(reportHtml, /id="easy-tab"/);
   assert.match(reportHtml, /id="company-tab"/);
   assert.match(reportHtml, /id="search"/);
+  assert.match(reportHtml, /skill:\\s\*/);
   assert.match(reportHtml, /id="applicant-review-filter"/);
   assert.match(reportHtml, /applicantReviewStatus/);
   assert.match(reportHtml, /id="hide-opened"/);
@@ -1747,6 +2144,7 @@ async function run() {
   assert.match(indeedReport, /data-location="other"/);
   assert.doesNotMatch(indeedReport, /Skipped: \d+ applied, \d+ expired|Dates: \d+ from list data/);
   assert.match(indeedReport, /visited-chip/);
+  assert.match(indeedReport, /skill:\\s\*/);
   const indeedReportScript = indeedReport.match(/<script>([\s\S]*?)<\/script>/);
   assert.ok(indeedReportScript);
   assert.doesNotThrow(() => new vm.Script(indeedReportScript[1]));
@@ -1791,6 +2189,57 @@ async function run() {
     /Company Site/
   );
 
+  const sharedStatus = { openedJobs: {}, hiddenJobs: {} };
+  const sharedStatusPage = createPage({
+    jobsById: { "888": job("888", "Easy Apply") },
+    openedJobsById: {},
+    resultsSelectedTab: "All"
+  }, "", async (message) => {
+    if (message.type !== "SYNC_JOB_STATUSES" || message.siteId !== "linkedin") {
+      return { ok: false, error: "Unexpected status request." };
+    }
+    for (const update of message.updates || []) {
+      for (const statusName of ["opened", "hidden"]) {
+        if (Object.prototype.hasOwnProperty.call(update, statusName)) {
+          const map = statusName === "opened" ? sharedStatus.openedJobs : sharedStatus.hiddenJobs;
+          map[update.jobId] = update[statusName];
+        }
+      }
+    }
+    return { ok: true, ...sharedStatus };
+  });
+  await settle();
+  assert.equal(sharedStatusPage.elements.get("job-table-body").children.length, 1);
+  sharedStatus.openedJobs["888"] = true;
+  await sharedStatusPage.refreshSharedJobStatuses();
+  assert.equal(sharedStatusPage.elements.get("job-table-body").children.length, 0);
+  await sharedStatusPage.elements.get("view-hidden-jobs").dispatch("click");
+  const sharedOpenedRow = sharedStatusPage.elements.get("job-table-body").children[0];
+  await findAll(
+    sharedOpenedRow,
+    (item) => item.getAttribute("aria-label") === "Mark 888 as not opened"
+  )[0].dispatch("click");
+  await settle();
+  assert.equal(sharedStatus.openedJobs["888"], false);
+  await sharedStatusPage.elements.get("view-hidden-jobs").dispatch("click");
+  assert.equal(sharedStatusPage.elements.get("job-table-body").children.length, 1);
+
+  const failedStatusPage = createPage({
+    records: { "linkedin:889": job("889", "Easy Apply") },
+    "ui.lastSite": "linkedin",
+    "ui.linkedin.selectedTab": "All"
+  }, "", async () => ({ ok: false, error: "Simulated backup unavailability." }));
+  await settle();
+  const failedStatusApply = findAll(
+    failedStatusPage.elements.get("job-table-body").children[0],
+    (item) => item.className === "apply-link"
+  )[0];
+  await failedStatusApply.dispatch("click");
+  await settle();
+  assert.equal(failedStatusPage.storage["opened.linkedin"]["889"], true);
+  assert.equal(failedStatusPage.elements.get("job-table-body").children.length, 0);
+  assert.match(failedStatusPage.elements.get("feedback").textContent, /Could not save opened status/);
+
   const popupHtml = fs.readFileSync("popup.html", "utf8");
   const resultsHtml = fs.readFileSync("results.html", "utf8");
   const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
@@ -1800,6 +2249,7 @@ async function run() {
   assert.match(resultsHtml, /id="filter-experience-under-3"/);
   assert.match(resultsHtml, /id="filter-experience-4-5"/);
   assert.match(resultsHtml, /id="filter-experience-6-plus"/);
+  assert.match(resultsHtml, /src="src\/core\/native-backup\.js"/);
   assert.match(resultsHtml, /Experience \(years\)/);
   assert.match(resultsHtml, /> 3Y and below</);
   assert.match(resultsHtml, /> 4-5Y</);

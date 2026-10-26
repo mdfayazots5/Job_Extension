@@ -81,7 +81,7 @@
     );
     const prunedOpened = opened && typeof opened === "object" && !Array.isArray(opened)
       ? Object.fromEntries(Object.entries(opened).filter(([jobId, isOpened]) => (
-        isOpened === true && retainedJobIds.has(jobId)
+        typeof isOpened === "boolean" && retainedJobIds.has(jobId)
       )))
       : {};
     await chrome.storage.local.set({
