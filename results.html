@@ -22,9 +22,9 @@
           <article class="summary-card">
             <div class="summary-label">Easy apply</div>
             <div class="summary-value"><span id="summary-easy">0</span><span id="summary-easy-share" class="summary-unit">0% of jobs</span></div>
-            <p class="summary-note">Jobs with an in-platform application</p>
+            <p id="summary-easy-note" class="summary-note">Jobs with an in-platform application</p>
           </article>
-          <article class="summary-card">
+          <article id="summary-reviewing-card" class="summary-card">
             <div class="summary-label">Actively reviewing</div>
             <div class="summary-value summary-green"><span id="summary-reviewing">0</span><span id="summary-reviewing-share" class="summary-unit">0% verified</span></div>
             <p class="summary-note">Recruiter activity shown on the listing</p>
@@ -143,14 +143,14 @@
         <div class="history-header">
           <div>
             <h2 id="skip-title-heading">Skip titles</h2>
-          <p>Only full title matches (case-insensitive) are skipped during capture.</p>
+            <p>Jobs whose title contains any of these words are skipped during capture. Case, spacing and punctuation don't matter. Example: “Test Engineer” also skips “Senior Test Engineer – Automation”.</p>
           </div>
           <button id="skip-title-close" class="icon-button" type="button" aria-label="Close skip titles">×</button>
         </div>
         <form id="skip-title-form" class="skip-title-form">
           <label for="skip-title-input">Job title</label>
           <div class="skip-title-editor">
-            <input id="skip-title-input" type="text" maxlength="160" autocomplete="off" placeholder="Enter an exact job title">
+            <input id="skip-title-input" type="text" maxlength="160" autocomplete="off" placeholder="Enter a title or words, e.g. Test Engineer">
             <button id="skip-title-submit" class="secondary-button" type="submit">Add title</button>
             <button id="skip-title-cancel-edit" class="secondary-button" type="button" hidden>Cancel</button>
           </div>
@@ -169,8 +169,8 @@
             <button id="company-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1">Company Apply (0)</button>
           </div>
           <label class="search-control">
-            <span id="search-label" class="visually-hidden">Search jobs by title, company, location, or skill using skill:.Net</span>
-            <input id="search" type="search" autocomplete="off" placeholder="Search title, company, location, or skill:.Net">
+            <span id="search-label" class="visually-hidden">Search jobs by title, company, or location</span>
+            <input id="search" type="search" autocomplete="off" placeholder="Search title, company, or location">
           </label>
           <label class="review-filter">
             <span class="visually-hidden">Filter by applicant review status</span>
@@ -184,9 +184,9 @@
         <div class="filter-secondary">
           <fieldset id="location-filter-control" class="filter-group">
             <legend>Location</legend>
-            <label><input id="filter-location-hyderabad" type="checkbox"> Hyderabad</label>
-            <label><input id="filter-location-bengaluru" type="checkbox"> Bengaluru</label>
-            <label><input id="filter-location-other" type="checkbox"> Other / Remote</label>
+            <label><input id="filter-location-hyderabad" type="checkbox"> Hyderabad <span id="filter-location-hyderabad-count" class="filter-count"></span></label>
+            <label><input id="filter-location-bengaluru" type="checkbox"> Bengaluru <span id="filter-location-bengaluru-count" class="filter-count"></span></label>
+            <label><input id="filter-location-other" type="checkbox"> Other / Remote <span id="filter-location-other-count" class="filter-count"></span></label>
           </fieldset>
           <fieldset id="experience-filter-control" class="filter-group" hidden>
             <legend>Experience (years)</legend>
@@ -194,7 +194,7 @@
             <label><input id="filter-experience-4-5" type="checkbox" aria-label="4 to 5 years experience"> 4-5Y</label>
             <label><input id="filter-experience-6-plus" type="checkbox" aria-label="6 or more years experience"> 6Y+</label>
           </fieldset>
-          <button id="hide-selected-jobs" class="secondary-button" type="button" disabled>Hide JD</button>
+          <button id="hide-selected-jobs" class="secondary-button" type="button" title="Tick jobs in the table to hide them" disabled>Hide JD</button>
           <button id="view-hidden-jobs" class="secondary-button" type="button" aria-pressed="false" disabled>View Hidden Jobs</button>
           <button id="clear-hidden-jobs" class="secondary-button" type="button" disabled>Clear</button>
           <span id="showing-count" class="showing-count">Showing 0 of 0</span>
@@ -207,7 +207,7 @@
         role="tabpanel"
         aria-labelledby="all-tab"
         tabindex="0">
-        <div class="table-wrap">
+        <div id="table-wrap" class="table-wrap">
           <table id="job-table">
             <thead>
               <tr id="column-headings"></tr>
@@ -223,6 +223,7 @@
     </main>
     <script src="config.js"></script>
     <script src="src/core/storage.js"></script>
+    <script src="src/core/text-match.js"></script>
     <script src="src/core/native-backup.js"></script>
     <script src="src/sites/linkedin/selectors.js"></script>
     <script src="src/sites/linkedin/metadata.js"></script>

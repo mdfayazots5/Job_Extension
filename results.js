@@ -122,6 +122,13 @@ const elements = {
   summaryTotalNote: document.getElementById("summary-total-note"),
   summaryEasy: document.getElementById("summary-easy"),
   summaryEasyShare: document.getElementById("summary-easy-share"),
+  summaryEasyNote: document.getElementById("summary-easy-note"),
+  summaryReviewingCard: document.getElementById("summary-reviewing-card"),
+  locationFilterCounts: {
+    hyderabad: document.getElementById("filter-location-hyderabad-count"),
+    bengaluru: document.getElementById("filter-location-bengaluru-count"),
+    other: document.getElementById("filter-location-other-count")
+  },
   summaryReviewing: document.getElementById("summary-reviewing"),
   summaryReviewingShare: document.getElementById("summary-reviewing-share"),
   summaryFresh: document.getElementById("summary-fresh"),
@@ -208,9 +215,13 @@ function configureSite(siteId) {
   elements.subtitle.hidden = siteId !== "linkedin";
   elements.siteRunFooter.hidden = siteId !== "naukri";
   elements.experienceFilterControl.hidden = siteId !== "naukri";
+  // Only LinkedIn exposes the "actively reviewing" signal; elsewhere the card would show a misleading 0.
+  if (elements.summaryReviewingCard) {
+    elements.summaryReviewingCard.hidden = siteId !== "linkedin";
+  }
   elements.parseWarningFooter.hidden = true;
-  elements.search.placeholder = "Search title, company, location, or skill:.Net";
-  elements.searchLabel.textContent = "Search jobs by title, company, location, or skill (use skill:.Net for skill-only search)";
+  elements.search.placeholder = "Search title, company, or location";
+  elements.searchLabel.textContent = "Search jobs by title, company, or location";
   elements.easyTab.hidden = false;
   elements.directTab.hidden = !adapter.ui.tabs.some((tab) => tab.id === "Direct Apply");
   elements.companyTab.hidden = !adapter.ui.tabs.some((tab) => (
@@ -228,6 +239,32 @@ function configureSite(siteId) {
   }
   renderHeaders();
   renderTabLabels();
+}
+
+function sameStatusMap(first, second) {
+  const firstEntries = Object.entries(first || {});
+  const secondStatuses = second || {};
+  return firstEntries.length === Object.keys(secondStatuses).length
+    && firstEntries.every(([jobId, value]) => (
+      Object.prototype.hasOwnProperty.call(secondStatuses, jobId)
+      && secondStatuses[jobId] === value
+    ));
+}
+
+function sameSiteRecords(first, second) {
+  const prefix = `${SITE_ID}:`;
+  const firstRecords = Object.fromEntries(
+    Object.entries(first || {}).filter(([key]) => key.startsWith(prefix))
+  );
+  const secondRecords = Object.fromEntries(
+    Object.entries(second || {}).filter(([key]) => key.startsWith(prefix))
+  );
+  const firstEntries = Object.entries(firstRecords);
+  return firstEntries.length === Object.keys(secondRecords).length
+    && firstEntries.every(([key, record]) => (
+      Object.prototype.hasOwnProperty.call(secondRecords, key)
+      && JSON.stringify(record) === JSON.stringify(secondRecords[key])
+    ));
 }
 
 function renderTabLabels() {
@@ -424,18 +461,39 @@ function getRecordLocation(record) {
   ].filter((value) => typeof value === "string").join(", ");
 }
 
+function getLocationMatches(record) {
+  const location = getRecordLocation(record);
+  const hyderabad = /\bhyderabad\b/i.test(location);
+  const bengaluru = /\b(?:bengaluru|bangalore)\b/i.test(location);
+  return { hyderabad, bengaluru, other: !hyderabad && !bengaluru };
+}
+
 function matchesLocationFilter(record, selectedLocations) {
   if (selectedLocations.length === 0) {
     return true;
   }
-  const location = getRecordLocation(record);
-  const hasHyderabad = /\bhyderabad\b/i.test(location);
-  const hasBengaluru = /\b(?:bengaluru|bangalore)\b/i.test(location);
-  return selectedLocations.some((selected) => (
-    selected === "hyderabad" && hasHyderabad
-    || selected === "bengaluru" && hasBengaluru
-    || selected === "other" && !hasHyderabad && !hasBengaluru
-  ));
+  const matches = getLocationMatches(record);
+  return selectedLocations.some((selected) => matches[selected] === true);
+}
+
+function renderLocationFilterCounts(records) {
+  const counts = { hyderabad: 0, bengaluru: 0, other: 0 };
+  for (const record of records) {
+    if (storageSnapshot.hiddenJobsById[String(record.jobId || "")] === true) {
+      continue;
+    }
+    const matches = getLocationMatches(record);
+    for (const key of Object.keys(counts)) {
+      if (matches[key]) {
+        counts[key] += 1;
+      }
+    }
+  }
+  for (const [key, element] of Object.entries(elements.locationFilterCounts)) {
+    if (element) {
+      element.textContent = `(${counts[key].toLocaleString()})`;
+    }
+  }
 }
 
 function matchesExperienceFilter(record, selectedBands) {
@@ -476,52 +534,22 @@ function matchesJobFilters(record, settings) {
     && matchesExperienceFilter(record, settings.experienceYears);
 }
 
-function matchesSearchTerm(value, term) {
-  if (!term) {
-    return true;
-  }
-  if (/\s/.test(term)) {
-    return value.includes(term);
-  }
-  const isWordCharacter = (character) => /[\p{L}\p{N}_]/u.test(character);
-  let index = value.indexOf(term);
-  while (index !== -1) {
-    const before = index > 0 ? value[index - 1] : "";
-    const after = value[index + term.length] || "";
-    if (
-      (!isWordCharacter(term[0]) || !isWordCharacter(before))
-      && (!isWordCharacter(term[term.length - 1]) || !isWordCharacter(after))
-    ) {
-      return true;
-    }
-    index = value.indexOf(term, index + 1);
-  }
-  return false;
-}
-
-function matchesJobSearch(record, query) {
+// Search rules live in src/core/text-match.js (shared with Skip Title and the exported report):
+// case/punctuation/spacing-insensitive, symbols match their spoken names, whole words first.
+// When a whole-word search finds nothing (a half-typed word like "do"), render() retries with
+// partialWords = true so word starts match.
+function matchesJobSearch(record, query, partialWords = false) {
   if (!query.trim()) {
     return true;
   }
-  const skillQuery = query.match(/^skill:\s*(.*)$/i);
-  const term = (skillQuery ? skillQuery[1] : query).trim();
-  if (!term) {
-    return false;
-  }
-  const fields = skillQuery
-    ? (Array.isArray(record.skills) ? record.skills : [])
-    : [
-      record.title,
-      record.company,
-      record.location,
-      record.locationRaw,
-      Array.isArray(record.locations) ? record.locations.join(" ") : ""
-    ];
-  const normalizedTerm = term.toLocaleLowerCase();
-  return fields.some((field) => (
-    typeof field === "string"
-    && matchesSearchTerm(field.toLocaleLowerCase(), normalizedTerm)
-  ));
+  const fields = [
+    record.title,
+    record.company,
+    record.location,
+    record.locationRaw,
+    Array.isArray(record.locations) ? record.locations.join(" ") : ""
+  ];
+  return globalThis.JobCollectorTextMatch.matchesAny(fields, query.trim(), { partialWords });
 }
 
 function getRecordTab(record) {
@@ -765,12 +793,37 @@ function getNaukriPostedText(record, now = Date.now()) {
     : age;
 }
 
+function getIndeedPostedText(record, now = Date.now()) {
+  const relativeText = String(record.postedText || "").trim();
+  if (record.sponsored === true) {
+    return "No date (sponsored)";
+  }
+  if (record.postedApprox || /^30\+/i.test(relativeText)) {
+    return "30+ days";
+  }
+  const postedAt = getIndeedPostedTimestamp(record);
+  if (!relativeText) {
+    return postedAt === null ? "Date unavailable" : "Posted date";
+  }
+  if (/^(?:just posted|today)$/i.test(relativeText) || /^\d+\s+days?\s+ago$/i.test(relativeText)) {
+    if (postedAt === null) {
+      return relativeText;
+    }
+    const age = Math.max(0, now - postedAt);
+    return age < 60 * 1000 ? "Just now" : formatRelativePostedAge(age);
+  }
+  return relativeText;
+}
+
 function getDisplayedPostedText(siteId, record, now = Date.now()) {
   if (siteId === "linkedin") {
     return getLinkedInPostedText(record, now);
   }
   if (siteId === "naukri") {
     return getNaukriPostedText(record, now);
+  }
+  if (siteId === "indeed") {
+    return getIndeedPostedText(record, now);
   }
   return record.postedText || "";
 }
@@ -792,9 +845,6 @@ function getPostedTimestampForFreshCount(record, now) {
     return getNaukriPostedTimestamp(record);
   }
   if (SITE_ID === "indeed") {
-    if (/^(?:just posted|today)$/i.test(String(record.postedText || "").trim())) {
-      return now;
-    }
     return getIndeedPostedTimestamp(record);
   }
   return null;
@@ -929,7 +979,6 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
     pubDate: typeof record.pubDate === "number" || typeof record.pubDate === "string"
       ? record.pubDate
       : null,
-    skills: Array.isArray(record.skills) ? record.skills.filter((skill) => typeof skill === "string") : [],
     applicantReviewStatus: record.applicantReviewStatus === "actively-reviewing"
       ? "actively-reviewing"
       : "not-indicated",
@@ -1035,7 +1084,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         ${SITE_ID === "naukri" ? '<button id="all-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="results-panel" tabindex="-1">All (0)</button>' : ""}
       </div>
       <div class="filters">
-        <label class="search-control"><span class="visually-hidden">Search jobs by title, company, location, or skill using skill:.Net</span><input id="search" type="search" autocomplete="off" placeholder="Search title, company, location, or skill:.Net"></label>
+        <label class="search-control"><span class="visually-hidden">Search jobs by title, company, or location</span><input id="search" type="search" autocomplete="off" placeholder="Search title, company, or location"></label>
         <label class="review-filter"><span class="visually-hidden">Filter by applicant review status</span><select id="applicant-review-filter"><option value="">All review statuses</option><option value="actively-reviewing">Actively reviewing</option><option value="not-indicated">No status shown</option></select></label>
         <fieldset class="filter-group"><legend>Location</legend>
           <label><input class="location-filter" data-location="hyderabad" type="checkbox"${reportFilterSettings.locations.includes("hyderabad") ? " checked" : ""}> Hyderabad</label>
@@ -1188,21 +1237,24 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       return "~" + new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", year: "numeric" }).format(date);
     };
     const postedTimestamp = (record) => {
-      if (record.postedApprox || /^30\\+/i.test(String(record.postedText || "").trim())) return null;
-      const estimate = Date.parse(String(record.postedDateEstimate || ""));
-      if (Number.isFinite(estimate)) return estimate;
-      const relativeText = String(record.postedText || "").trim();
-      const capturedAt = Date.parse(String(record.capturedAt || ""));
-      if (Number.isFinite(capturedAt)) {
-        if (/^(?:just posted|today)$/i.test(relativeText)) return capturedAt;
-        const daysAgo = relativeText.match(/^(\\d+)\\s+days?\\s+ago$/i);
-        if (daysAgo) return capturedAt - Number(daysAgo[1]) * 86400000;
+      if (SITE_ID !== "indeed") {
+        if (record.postedApprox || /^30\\+/i.test(String(record.postedText || "").trim())) return null;
+        const estimate = Date.parse(String(record.postedDateEstimate || ""));
+        if (Number.isFinite(estimate)) return estimate;
+        const relativeText = String(record.postedText || "").trim();
+        const capturedAt = Date.parse(String(record.capturedAt || ""));
+        if (Number.isFinite(capturedAt)) {
+          if (/^(?:just posted|today)$/i.test(relativeText)) return capturedAt;
+          const daysAgo = relativeText.match(/^(\\d+)\\s+days?\\s+ago$/i);
+          if (daysAgo) return capturedAt - Number(daysAgo[1]) * 86400000;
+        }
+        let pubDate = typeof record.pubDate === "number" || /^\\d+$/.test(String(record.pubDate || ""))
+          ? Number(record.pubDate)
+          : Date.parse(String(record.pubDate || ""));
+        if (Number.isFinite(pubDate) && pubDate > 0 && pubDate < 1e11) pubDate *= 1000;
+        return Number.isFinite(pubDate) ? pubDate : null;
       }
-      let pubDate = typeof record.pubDate === "number" || /^\\d+$/.test(String(record.pubDate || ""))
-        ? Number(record.pubDate)
-        : Date.parse(String(record.pubDate || ""));
-      if (Number.isFinite(pubDate) && pubDate > 0 && pubDate < 1e11) pubDate *= 1000;
-      return Number.isFinite(pubDate) ? pubDate : null;
+      return getIndeedPostedTimestamp(record);
     };
     const comparePosted = (first, second, direction) => {
       const kind = (record) => record.sponsored
@@ -1283,33 +1335,12 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
           : minimum <= bands[band][1] && maximum >= bands[band][0]
       ));
     };
-    const matchesSearchTerm = (value, term) => {
-      if (!term) return true;
-      if (/\\s/.test(term)) return value.includes(term);
-      const isWordCharacter = (character) => /[\\p{L}\\p{N}_]/u.test(character);
-      let index = value.indexOf(term);
-      while (index !== -1) {
-        const before = index > 0 ? value[index - 1] : "";
-        const after = value[index + term.length] || "";
-        if (
-          (!isWordCharacter(term[0]) || !isWordCharacter(before))
-          && (!isWordCharacter(term[term.length - 1]) || !isWordCharacter(after))
-        ) return true;
-        index = value.indexOf(term, index + 1);
-      }
-      return false;
-    };
-    const matchesJobSearch = (record, query) => {
+    // Same matching rules as the live results page (embedded from src/core/text-match.js).
+    const TextMatch = (${globalThis.JobCollectorTextMatch.factorySource})();
+    const matchesJobSearch = (record, query, partialWords = false) => {
       if (!query.trim()) return true;
-      const skillQuery = query.match(/^skill:\\s*(.*)$/i);
-      const term = (skillQuery ? skillQuery[1] : query).trim();
-      if (!term) return false;
-      const fields = skillQuery
-        ? record.skills
-        : [record.title, record.company, record.location];
-      return (Array.isArray(fields) ? fields : [])
-        .some((field) => typeof field === "string"
-          && matchesSearchTerm(field.toLocaleLowerCase(), term.toLocaleLowerCase()));
+      const fields = [record.title, record.company, record.location];
+      return TextMatch.matchesAny(fields, query.trim(), { partialWords });
     };
     const render = () => {
       const grouped = records.filter((record) => (
@@ -1317,12 +1348,14 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
       ));
       const term = search.value.trim().toLocaleLowerCase();
       const reviewStatus = applicantReviewFilter.value;
-      const matched = grouped.filter((record) => (
-        (!reviewStatus || (record.applicantReviewStatus === "actively-reviewing"
+      const reviewMatches = (record) => !reviewStatus
+        || (record.applicantReviewStatus === "actively-reviewing"
           ? "actively-reviewing"
-          : "not-indicated") === reviewStatus)
-        && matchesJobSearch(record, term)
-      ));
+          : "not-indicated") === reviewStatus;
+      let matched = grouped.filter((record) => reviewMatches(record) && matchesJobSearch(record, term));
+      if (term && matched.length === 0) {
+        matched = grouped.filter((record) => reviewMatches(record) && matchesJobSearch(record, term, true));
+      }
       const visible = matched.filter((record) => (
         !filterSettings.hideOpened || opened[record.jobId] !== true
       ));
@@ -1396,7 +1429,7 @@ function buildStandaloneReport(records, openedJobsById, runState, savedSelectedT
         postedCell.dataset.label = "Posted";
         const postedContent = text("div", "posted-content", "");
         postedContent.appendChild(text("span", record.postedType === "Reposted" ? "posted-badge is-reposted" : "posted-badge", record.postedType === "Posted" || record.postedType === "Reposted" ? record.postedType : "Unknown"));
-        postedContent.appendChild(text("span", "posted-relative", record.postedText));
+        postedContent.appendChild(text("span", "posted-relative", SITE_ID === "indeed" ? getIndeedPostedText(record) : record.postedText));
         postedCell.appendChild(postedContent);
         const timestamp = "${escapeHtml(SITE_ID)}" === "indeed"
           ? postedTimestamp(record)
@@ -1657,8 +1690,10 @@ async function openHistoryDialog() {
   await renderHistory();
 }
 
+// Same equality the collectors use (src/core/text-match.js): "Sr. .NET Developer" and
+// "sr dotnet developer" are one skipped title, so they are not listed twice.
 function normalizeSkipTitle(value) {
-  return String(value || "").trim().toLocaleLowerCase();
+  return globalThis.JobCollectorTextMatch.titleKey(value);
 }
 
 function normalizeSkipTitles(value) {
@@ -2048,6 +2083,16 @@ function clearPendingJobStatusUpdates(updates) {
   }
 }
 
+function withPendingStatuses(statusName, statusMap) {
+  const result = statusMap && typeof statusMap === "object" && !Array.isArray(statusMap)
+    ? { ...statusMap }
+    : {};
+  for (const [jobId, value] of pendingJobStatusUpdates[statusName]) {
+    result[jobId] = value;
+  }
+  return result;
+}
+
 function applyPendingJobStatusUpdates(openedJobs, hiddenJobs) {
   for (const [jobId, value] of pendingJobStatusUpdates.opened) {
     openedJobs[jobId] = value;
@@ -2068,16 +2113,26 @@ async function synchronizeJobStatuses(updates) {
     let localStatuses = null;
     if (updates) {
       localStatuses = await localOperation;
+      const statusesChanged = !sameStatusMap(
+        storageSnapshot.openedJobsById,
+        localStatuses.openedJobs
+      ) || !sameStatusMap(storageSnapshot.hiddenJobsById, localStatuses.hiddenJobs);
       storageSnapshot.openedJobsById = localStatuses.openedJobs;
       storageSnapshot.hiddenJobsById = localStatuses.hiddenJobs;
       applyPendingJobStatusUpdates(
         storageSnapshot.openedJobsById,
         storageSnapshot.hiddenJobsById
       );
-      render();
+      if (statusesChanged) {
+        render();
+      }
     }
     if (!chrome.runtime || typeof chrome.runtime.sendMessage !== "function") {
       localStatuses = localStatuses || await readLocalJobStatuses();
+      const statusesChanged = !sameStatusMap(
+        storageSnapshot.openedJobsById,
+        localStatuses.openedJobs
+      ) || !sameStatusMap(storageSnapshot.hiddenJobsById, localStatuses.hiddenJobs);
       storageSnapshot.openedJobsById = localStatuses.openedJobs;
       storageSnapshot.hiddenJobsById = localStatuses.hiddenJobs;
       applyPendingJobStatusUpdates(
@@ -2093,7 +2148,9 @@ async function synchronizeJobStatuses(updates) {
         openedCount: Object.keys(localStatuses.openedJobs).length,
         hiddenCount: Object.keys(localStatuses.hiddenJobs).length
       });
-      render();
+      if (statusesChanged) {
+        render();
+      }
       return localStatuses;
     }
     const response = await chrome.runtime.sendMessage({
@@ -2120,8 +2177,12 @@ async function synchronizeJobStatuses(updates) {
     if (updates) {
       clearPendingJobStatusUpdates(updates);
     }
-    storageSnapshot.openedJobsById = response.openedJobs;
-    storageSnapshot.hiddenJobsById = response.hiddenJobs;
+    const statusesChanged = !sameStatusMap(
+      storageSnapshot.openedJobsById,
+      response.openedJobs
+    ) || !sameStatusMap(storageSnapshot.hiddenJobsById, response.hiddenJobs);
+    storageSnapshot.openedJobsById = { ...response.openedJobs };
+    storageSnapshot.hiddenJobsById = { ...response.hiddenJobs };
     applyPendingJobStatusUpdates(
       storageSnapshot.openedJobsById,
       storageSnapshot.hiddenJobsById
@@ -2132,7 +2193,9 @@ async function synchronizeJobStatuses(updates) {
       openedCount: Object.keys(response.openedJobs).length,
       hiddenCount: Object.keys(response.hiddenJobs).length
     });
-    render();
+    if (statusesChanged) {
+      render();
+    }
     return response;
   });
   jobStatusWriteQueue = operation.catch(() => {});
@@ -2158,13 +2221,17 @@ function refreshSharedJobStatuses() {
   return statusRefreshPromise;
 }
 
+// Background poll for changes made in other tabs/browsers. Returning to the tab (focus /
+// visibilitychange) refreshes immediately, so a slower poll costs nothing visible.
+const SHARED_STATUS_REFRESH_MS = 15000;
+
 function scheduleSharedJobStatusRefresh() {
   globalThis.setTimeout(() => {
     if (document.visibilityState !== "hidden") {
       void refreshSharedJobStatuses();
     }
     scheduleSharedJobStatusRefresh();
-  }, 5000);
+  }, SHARED_STATUS_REFRESH_MS);
 }
 
 function updateOpenedState(jobId, isOpened) {
@@ -2362,17 +2429,13 @@ function createJobRow(record, tab, index) {
       postedType
     ));
   }
-  const postedLabel = SITE_ID === "indeed" && record.sponsored === true
-    ? "No date (sponsored)"
-    : SITE_ID === "indeed" && record.postedApprox
-      ? "30+ days"
-      : SITE_ID === "indeed" && getIndeedPostedTimestamp(record) === null
-        ? "Date unavailable"
-        : SITE_ID === "linkedin"
-          ? getLinkedInPostedText(record) || "Date not listed"
-          : SITE_ID === "naukri"
-            ? getNaukriPostedText(record) || "Date not listed"
-            : record.postedText || (SITE_ID === "indeed" ? "Posted date" : "Date not listed");
+  const postedLabel = SITE_ID === "indeed"
+    ? getIndeedPostedText(record)
+    : SITE_ID === "linkedin"
+      ? getLinkedInPostedText(record) || "Date not listed"
+      : SITE_ID === "naukri"
+        ? getNaukriPostedText(record) || "Date not listed"
+        : record.postedText || "Date not listed";
   const postedRelative = createTextElement("span", "posted-relative", postedLabel);
   if (SITE_ID === "linkedin" || SITE_ID === "naukri") {
     dynamicPostedLabels.set(jobId, { element: postedRelative, record });
@@ -2429,6 +2492,12 @@ function createJobRow(record, tab, index) {
   const applyUrl = getApplyUrl(record, tab);
   const applyLink = createTextElement("a", "apply-link", "Apply");
   applyLinkElement = applyLink;
+  // Distinguish in-platform vs company-site applications even on the "All" tab.
+  const isEasyApply = getRecordTab(record) === "Easy Apply";
+  applyLink.setAttribute("data-apply-type", isEasyApply ? "easy" : "company");
+  applyLink.setAttribute("title", isEasyApply
+    ? `Easy Apply on ${SITE_ADAPTER.label}`
+    : "Apply on the company site");
   if (applyUrl) {
     applyLink.href = applyUrl;
     applyLink.target = "_blank";
@@ -2505,6 +2574,29 @@ function chooseInitialTab(records) {
   selectedTab = ALL_TAB;
 }
 
+// Let the table scroller run to the bottom of the window instead of a fixed cap, so there is
+// no dead space under it and no second page scrollbar on desktop layouts.
+function fitTableToViewport() {
+  const wrap = document.getElementById("table-wrap");
+  if (!wrap || typeof wrap.getBoundingClientRect !== "function"
+    || typeof globalThis.innerHeight !== "number") {
+    return;
+  }
+  const rect = wrap.getBoundingClientRect();
+  const scrollY = globalThis.scrollY || 0;
+  const top = rect.top + scrollY;
+  // Reserve what sits below the table inside the page shell (empty state, footers, padding) so
+  // the page itself never scrolls. Measured against the content-sized shell, NOT the document
+  // height: when a search leaves only a few rows, the document is padded out to the viewport
+  // and that blank space must not be counted, or the table stays shrunk after clearing search.
+  const shell = typeof wrap.closest === "function" ? wrap.closest(".page-shell") : null;
+  const belowTable = shell && typeof shell.getBoundingClientRect === "function"
+    ? Math.max(16, shell.getBoundingClientRect().bottom - rect.bottom)
+    : 36;
+  const available = Math.max(320, Math.floor(globalThis.innerHeight - top - belowTable));
+  wrap.style.setProperty("--table-fit-height", `${available}px`);
+}
+
 function render() {
   try {
     const records = getRecords();
@@ -2519,13 +2611,24 @@ function render() {
     const activeRecords = recordsByTab[selectedTab] || [];
     const searchTerm = elements.search.value.trim().toLocaleLowerCase();
     const applicantReviewStatus = elements.applicantReviewFilter.value;
-    const matchingRecords = activeRecords.filter((record) => (
-      (!applicantReviewStatus
+    const matchesReviewStatus = (record) => (
+      !applicantReviewStatus
         || (record.applicantReviewStatus === "actively-reviewing"
           ? "actively-reviewing"
-          : "not-indicated") === applicantReviewStatus)
-      && matchesJobSearch(record, searchTerm)
+          : "not-indicated") === applicantReviewStatus
+    );
+    let matchingRecords = activeRecords.filter((record) => (
+      matchesReviewStatus(record) && matchesJobSearch(record, searchTerm)
     ));
+    // Half-typed words ("do", "angu") have no whole-word hits; show partial-word matches instead
+    // of an empty table. Complete words keep precise whole-word results.
+    let usingPartialMatches = false;
+    if (searchTerm && matchingRecords.length === 0) {
+      matchingRecords = activeRecords.filter((record) => (
+        matchesReviewStatus(record) && matchesJobSearch(record, searchTerm, true)
+      ));
+      usingPartialMatches = matchingRecords.length > 0;
+    }
     const visibleRecords = sortRecords(matchingRecords.filter((record) => {
       const jobId = String(record.jobId || "");
       const wasOpened = isRecordOpened(record);
@@ -2539,7 +2642,8 @@ function render() {
       );
     }));
     visibleJobIds = visibleRecords.map((record) => String(record.jobId || ""));
-    elements.showingCount.textContent = `Showing ${visibleRecords.length} of ${matchingRecords.length}`;
+    elements.showingCount.textContent = `Showing ${visibleRecords.length} of ${matchingRecords.length}`
+      + (usingPartialMatches ? " (partial-word matches)" : "");
 
     elements.allTab.textContent = `${ALL_TAB} (${recordsByTab[ALL_TAB].length})`;
     elements.allTab.setAttribute("aria-selected", String(selectedTab === ALL_TAB));
@@ -2566,9 +2670,23 @@ function render() {
     const hiddenCount = records.filter((record) => (
       storageSnapshot.hiddenJobsById[String(record.jobId || "")] === true
     )).length;
-    elements.summaryTotalNote.textContent = `${records.length - hiddenCount} visible · ${hiddenCount} hidden`;
+    // Cards describe everything captured; when location/experience filters are on, also show
+    // the filtered figure so the cards reconcile with the tab counts below.
+    const filtersActive = storageSnapshot.filterSettings.locations.length > 0
+      || storageSnapshot.filterSettings.experienceYears.length > 0;
+    const totalNote = `${records.length - hiddenCount} visible · ${hiddenCount} hidden`;
+    elements.summaryTotalNote.textContent = filtersActive
+      ? `${totalNote} · ${visibleByFilters.length} match filters`
+      : totalNote;
     elements.summaryEasy.textContent = String(easyApplyCount);
     elements.summaryEasyShare.textContent = `${records.length ? Math.round(easyApplyCount / records.length * 100) : 0}% of jobs`;
+    if (elements.summaryEasyNote) {
+      const easyInView = (recordsByTab["Easy Apply"] || []).length;
+      elements.summaryEasyNote.textContent = filtersActive
+        ? `${easyInView} match your filters (Easy Apply tab)`
+        : "Jobs with an in-platform application";
+    }
+    renderLocationFilterCounts(records);
     elements.summaryReviewing.textContent = String(activelyReviewingCount);
     elements.summaryReviewingShare.textContent = `${records.length ? Math.round(activelyReviewingCount / records.length * 100) : 0}% verified`;
     elements.summaryFresh.textContent = String(freshCount);
@@ -2583,6 +2701,7 @@ function render() {
       elements.tableBody.appendChild(createJobRow(record, selectedTab, index + 1));
     });
     updateHideControls();
+    fitTableToViewport();
     for (const column of SITE_ADAPTER.ui.columns.filter((item) => item.sortable)) {
       const key = column.id;
       const isActive = sortState.key === key;
@@ -2668,6 +2787,9 @@ function updateHideControls() {
     elements.selectAllJobs.disabled = visibleJobIds.length === 0;
   }
   elements.hideSelectedJobs.disabled = selectedJobIds.size === 0 || hidingSelectedJobs;
+  elements.hideSelectedJobs.setAttribute("title", selectedJobIds.size === 0
+    ? "Tick jobs in the table to hide them"
+    : `Hide ${selectedJobIds.size} selected ${selectedJobIds.size === 1 ? "job" : "jobs"}`);
   const hasHiddenOrOpenedJobs = getRecords().some((record) => {
     return storageSnapshot.hiddenJobsById[String(record.jobId || "")] === true
       || isRecordOpened(record);
@@ -3076,6 +3198,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {
     return;
   }
+  let shouldRender = false;
   if (changes.records) {
     renderSiteCounts(changes.records.newValue);
     void appendResultsFlow("records_storage_changed", {
@@ -3089,32 +3212,42 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     flowLogSiteId = changes[FLOW_LOG_SITE_KEY].newValue;
   }
   if (changes[STORAGE_KEYS.jobs]) {
-    storageSnapshot.jobsById = unpackSiteJobs(changes[STORAGE_KEYS.jobs].newValue);
-    render();
-    if (elements.historyDialog.open) {
-      void renderHistory().catch((error) => {
-        elements.historyError.textContent = `Could not load job history: ${error.message}`;
-        elements.historyError.hidden = false;
-      });
+    const change = changes[STORAGE_KEYS.jobs];
+    if (!sameSiteRecords(change.oldValue, change.newValue)) {
+      storageSnapshot.jobsById = unpackSiteJobs(change.newValue);
+      shouldRender = true;
     }
-    return;
   }
   for (const [key, change] of Object.entries(changes)) {
+    // Re-apply opens/hides that are still being saved: a write that started before the user's
+    // click must not make the job flash back into the list.
     if (key === STORAGE_KEYS.opened) {
-      storageSnapshot.openedJobsById = change.newValue || {};
+      const openedJobs = withPendingStatuses("opened", change.newValue);
+      if (!sameStatusMap(storageSnapshot.openedJobsById, openedJobs)) {
+        storageSnapshot.openedJobsById = openedJobs;
+        shouldRender = true;
+      }
     } else if (key === STORAGE_KEYS.hidden) {
-      storageSnapshot.hiddenJobsById = change.newValue || {};
-      updateHideControls();
+      const hiddenJobs = withPendingStatuses("hidden", change.newValue);
+      if (!sameStatusMap(storageSnapshot.hiddenJobsById, hiddenJobs)) {
+        storageSnapshot.hiddenJobsById = hiddenJobs;
+        updateHideControls();
+        shouldRender = true;
+      }
     } else if (key === STORAGE_KEYS.filters) {
       storageSnapshot.filterSettings = normalizeFilterSettings(change.newValue);
       setFilterControls(storageSnapshot.filterSettings);
+      shouldRender = true;
     } else if (key === STORAGE_KEYS.runState) {
       storageSnapshot.collectorState = change.newValue || null;
+      shouldRender = true;
     } else if (key === STORAGE_KEYS.selectedTab) {
       storageSnapshot.resultsSelectedTab = change.newValue || null;
+      shouldRender = true;
     } else if (key === getSkipTitlesStorageKey()) {
       storageSnapshot.skipTitles = normalizeSkipTitles(change.newValue);
       renderSkipTitleList();
+      shouldRender = true;
     } else if (key === getFlowLogStorageKeys().enabled) {
       flowLogEnabled = change.newValue === true;
       elements.flowLoggingToggle.checked = flowLogEnabled;
@@ -3140,7 +3273,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   ) {
     selectedTab = changes[STORAGE_KEYS.selectedTab].newValue;
   }
-  render();
+  if (shouldRender) {
+    render();
+  }
   if (
     elements.historyDialog.open
     && (
@@ -3156,6 +3291,24 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 if (typeof document.addEventListener === "function") {
+  // Close the settings menu on outside click or Escape so it never sits over the table.
+  document.addEventListener("click", (event) => {
+    if (elements.settingsMenu.hidden) {
+      return;
+    }
+    const target = event.target;
+    if (target && typeof elements.settingsMenu.contains === "function"
+      && (elements.settingsMenu.contains(target) || elements.settingsButton.contains(target))) {
+      return;
+    }
+    closeSettingsMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !elements.settingsMenu.hidden) {
+      closeSettingsMenu();
+      elements.settingsButton.focus();
+    }
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "hidden") {
       void refreshSharedJobStatuses();
@@ -3166,6 +3319,7 @@ if (typeof globalThis.addEventListener === "function") {
   globalThis.addEventListener("focus", () => {
     void refreshSharedJobStatuses();
   });
+  globalThis.addEventListener("resize", fitTableToViewport);
 }
 
 initializeResultsPage().catch((error) => {

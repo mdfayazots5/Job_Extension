@@ -335,7 +335,11 @@
           const localStatuses = localValues[statusSettingKey];
           if (localStatuses && typeof localStatuses === "object" && !Array.isArray(localStatuses)) {
             for (const [jobId, value] of Object.entries(localStatuses)) {
-              if (typeof value === "boolean") {
+              if (typeof value === "boolean"
+                && !Object.prototype.hasOwnProperty.call(
+                  archivedStatuses[siteId][jobId] || {},
+                  statusName
+                )) {
                 archivedStatuses[siteId][jobId] = {
                   ...(archivedStatuses[siteId][jobId] || {}),
                   [statusName]: value

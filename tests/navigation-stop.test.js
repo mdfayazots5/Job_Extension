@@ -107,6 +107,7 @@ function loadSite(siteId, markup, {
     "src/core/storage.js",
     `src/sites/${siteId}/config.js`,
     `src/sites/${siteId}/selectors.js`,
+    "src/core/text-match.js",
     `src/sites/${siteId}/adapter.js`,
     "src/core/run-loop.js"
   ];
@@ -116,6 +117,7 @@ function loadSite(siteId, markup, {
       "src/sites/indeed/config.js",
       "src/sites/indeed/selectors.js",
       "src/sites/indeed/parse.js",
+      "src/core/text-match.js",
       "src/sites/indeed/adapter.js",
       "src/core/run-loop.js",
       "src/sites/indeed/collector.js"

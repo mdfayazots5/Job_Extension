@@ -178,9 +178,6 @@
       locationRaw: locationRaw || null,
       workMode: location.workMode,
       locations: location.locations,
-      skills: selectors.queryAll(card, s.skills)
-        .map((skill) => selectors.text(skill))
-        .filter(Boolean),
       walkIn,
       walkInDates: walkIn
         ? selectors.text(selectors.query(card, s.walkInDates)) || null
@@ -336,13 +333,11 @@
     return normalized;
   }
 
+  // Skip Title is a "contains" (LIKE) match using the shared rule in src/core/text-match.js:
+  // case, spacing, punctuation and symbol spelling are ignored, whole words only.
+  // "Test Engineer" skips "Senior Test Engineer - Automation"; "Java" keeps "JavaScript Developer".
   function shouldSkipRole(record, skipTitles = []) {
-    const title = String(record && record.title || "").trim().toLocaleLowerCase();
-    return title !== "" && Array.isArray(skipTitles) && skipTitles.some((skipTitle) => (
-      typeof skipTitle === "string"
-      && skipTitle.trim() !== ""
-      && skipTitle.trim().toLocaleLowerCase() === title
-    ));
+    return global.JobCollectorTextMatch.findContainedPhrase(record && record.title, skipTitles) !== null;
   }
 
   global.JobCollectorNaukriAdapter = Object.freeze({

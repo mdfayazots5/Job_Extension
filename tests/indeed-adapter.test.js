@@ -17,6 +17,7 @@ for (const file of [
   "src/sites/indeed/config.js",
   "src/sites/indeed/selectors.js",
   "src/sites/indeed/parse.js",
+  "src/core/text-match.js",
   "src/sites/indeed/adapter.js"
 ]) {
   vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
@@ -31,8 +32,10 @@ assert.equal(context.JobCollectorIndeedConfig.excludedRoleTerms, undefined);
 assert.equal(adapter.shouldSkipRole({ title: "Software Engineer" }), false);
 assert.equal(adapter.shouldSkipRole({ title: "Software Engineer" }, ["Software Engineer"]), true);
 assert.equal(adapter.shouldSkipRole({ title: " software engineer " }, ["Software Engineer"]), true);
-assert.equal(adapter.shouldSkipRole({ title: "Senior Software Engineer" }, ["Software Engineer"]), false);
-assert.equal(adapter.shouldSkipRole({ title: "Software Engineer II" }, ["Software Engineer"]), false);
+// Skip Title is a contains (LIKE) match on whole words.
+assert.equal(adapter.shouldSkipRole({ title: "Senior Software Engineer" }, ["Software Engineer"]), true);
+assert.equal(adapter.shouldSkipRole({ title: "Software Engineer II" }, ["Software Engineer"]), true);
+assert.equal(adapter.shouldSkipRole({ title: "Software Developer" }, ["Software Engineer"]), false);
 assert.equal(adapter.shouldSkipRole({ title: ".NET Developer" }, [".NET Developer"]), true);
 assert.deepEqual(
   JSON.parse(JSON.stringify(context.JobCollectorIndeedConfig.pageDelayMs)),
@@ -108,7 +111,7 @@ assert.equal(normalizedEasyRemote.postedText, "5 days ago");
 assert.equal(normalizedEasyRemote.workMode, "Remote");
 assert.equal(
   normalizedEasyRemote.postedDateEstimate,
-  new Date(Date.parse(capturedAt) - 5 * 24 * 60 * 60 * 1000).toISOString()
+  new Date(easyRemote.pubDate).toISOString()
 );
 
 const postedDateCases = [
@@ -125,7 +128,7 @@ for (const [postedText, expectedDate] of postedDateCases) {
         results: [{
           jobkey: "0123456789abcdef",
           formattedRelativeTime: postedText,
-          pubDate: 946684800000
+          pubDate: null
         }]
       }
     }
@@ -148,6 +151,15 @@ for (const [postedText, expectedDate] of postedDateCases) {
   assert.equal(normalized.postedApprox, postedText === "30+ days ago", `${postedText} approximate flag`);
   postedFixture.window.close();
 }
+
+const staleJustPosted = adapter.normalize({
+  jobId: "0123456789abcdef",
+  postedText: "Just posted",
+  pubDate: Date.parse("2026-10-16T12:00:00.000Z"),
+  capturedAt: "2026-10-17T12:00:00.000Z"
+});
+assert.equal(staleJustPosted.postedText, "1 day ago");
+assert.equal(staleJustPosted.postedDateEstimate, "2026-10-16T12:00:00.000Z");
 
 const secondsDate = adapter.normalize({
   jobId: "0123456789abcdef",

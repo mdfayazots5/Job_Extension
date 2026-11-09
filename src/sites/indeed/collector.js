@@ -253,6 +253,12 @@
             pageNumber: currentPage
           });
           if (adapter.shouldSkipRole(normalized, skipTitles)) {
+            // Same flow-log event as Naukri, so Skip Title hits are visible in Flow logs.
+            await logFlow(currentRunId, "role-excluded", {
+              pageNumber: currentPage,
+              jobId: normalized.jobId,
+              title: normalized.title
+            });
             continue;
           }
           const response = await send({

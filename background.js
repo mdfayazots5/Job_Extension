@@ -3,6 +3,7 @@
 importScripts(
   "config.js",
   "src/core/storage.js",
+  "src/core/text-match.js",
   "src/core/native-backup.js",
   "src/core/run-guard.js",
   "src/core/messages.js",
@@ -43,6 +44,7 @@ const ALLOWED_TRANSITIONS = Object.freeze({
 const CONTENT_FILES = [
   "config.js",
   "src/core/storage.js",
+  "src/core/text-match.js",
   "src/sites/linkedin/selectors.js",
   "src/sites/linkedin/metadata.js",
   "src/sites/linkedin/adapter.js",
@@ -1200,7 +1202,43 @@ async function handleMessage(message, sender) {
   }
 }
 
-async function synchronizeJobStatuses(message) {
+function sameJobStatusMap(first, second) {
+  const firstEntries = Object.entries(first || {});
+  const secondStatuses = second || {};
+  return firstEntries.length === Object.keys(secondStatuses).length
+    && firstEntries.every(([jobId, value]) => (
+      Object.prototype.hasOwnProperty.call(secondStatuses, jobId)
+      && secondStatuses[jobId] === value
+    ));
+}
+
+// One status sync at a time per site. Without this, a slow refresh that read the archive
+// before the user opened/hid a job could finish after that change and write the older state
+// back, making the job reappear until the next refresh.
+const jobStatusSyncQueues = new Map();
+
+function synchronizeJobStatuses(message) {
+  const siteId = message && message.siteId;
+  const previous = jobStatusSyncQueues.get(siteId) || Promise.resolve();
+  const operation = previous.then(() => synchronizeJobStatusesNow(message));
+  jobStatusSyncQueues.set(siteId, operation.catch(() => {}));
+  return operation;
+}
+
+// Values changed in local storage while this sync was running (e.g. the results page records a
+// click before its update message is processed) are newer than the archive read, so they win.
+function keepConcurrentLocalChanges(merged, baseline, current) {
+  const result = { ...merged };
+  for (const [jobId, value] of Object.entries(current || {})) {
+    if (typeof value === "boolean"
+      && (!Object.prototype.hasOwnProperty.call(baseline, jobId) || baseline[jobId] !== value)) {
+      result[jobId] = value;
+    }
+  }
+  return result;
+}
+
+async function synchronizeJobStatusesNow(message) {
   const siteId = message.siteId;
   if (!globalThis.JobCollectorStorage.siteIds.includes(siteId)) {
     throw new Error("A supported site ID is required to synchronize job statuses.");
@@ -1260,18 +1298,18 @@ async function synchronizeJobStatuses(message) {
     }
   }
   const archiveUpdates = [];
-  for (const [statusName, localStatuses, mergedStatuses] of [
-    ["opened", openedJobs, mergedOpenedJobs],
-    ["hidden", hiddenJobs, mergedHiddenJobs]
-  ]) {
-    for (const [jobId, value] of Object.entries(localStatuses)) {
-      if (typeof value !== "boolean") {
-        continue;
-      }
-      mergedStatuses[jobId] = value;
-      const sharedStatus = sharedStatuses[jobId];
-      if (!sharedStatus || sharedStatus[statusName] !== value) {
-        archiveUpdates.push({ jobId, [statusName]: value });
+  if (updates !== undefined) {
+    for (const update of updates) {
+      for (const statusName of ["opened", "hidden"]) {
+        if (Object.prototype.hasOwnProperty.call(update, statusName)) {
+          const value = update[statusName];
+          const mergedStatuses = statusName === "opened" ? mergedOpenedJobs : mergedHiddenJobs;
+          mergedStatuses[update.jobId] = value;
+          if (!sharedStatuses[update.jobId]
+            || sharedStatuses[update.jobId][statusName] !== value) {
+            archiveUpdates.push({ jobId: update.jobId, [statusName]: value });
+          }
+        }
       }
     }
   }
@@ -1281,17 +1319,30 @@ async function synchronizeJobStatuses(message) {
       archiveUpdates.slice(offset, offset + 1000)
     );
   }
+  // Re-read local storage right before writing: `openedJobs`/`hiddenJobs` are what this sync
+  // started from (including its own updates); anything that differs now changed meanwhile.
+  const currentValues = await chrome.storage.local.get([keys.openedJobs, keys.hiddenJobs]);
+  const finalOpenedJobs = keepConcurrentLocalChanges(
+    mergedOpenedJobs,
+    openedJobs,
+    currentValues[keys.openedJobs]
+  );
+  const finalHiddenJobs = keepConcurrentLocalChanges(
+    mergedHiddenJobs,
+    hiddenJobs,
+    currentValues[keys.hiddenJobs]
+  );
   const changes = {};
-  if (JSON.stringify(localValues[keys.openedJobs] || {}) !== JSON.stringify(mergedOpenedJobs)) {
-    changes[keys.openedJobs] = mergedOpenedJobs;
+  if (!sameJobStatusMap(currentValues[keys.openedJobs], finalOpenedJobs)) {
+    changes[keys.openedJobs] = finalOpenedJobs;
   }
-  if (JSON.stringify(localValues[keys.hiddenJobs] || {}) !== JSON.stringify(mergedHiddenJobs)) {
-    changes[keys.hiddenJobs] = mergedHiddenJobs;
+  if (!sameJobStatusMap(currentValues[keys.hiddenJobs], finalHiddenJobs)) {
+    changes[keys.hiddenJobs] = finalHiddenJobs;
   }
   if (Object.keys(changes).length > 0) {
     await chrome.storage.local.set(changes);
   }
-  return { ok: true, openedJobs: mergedOpenedJobs, hiddenJobs: mergedHiddenJobs };
+  return { ok: true, openedJobs: finalOpenedJobs, hiddenJobs: finalHiddenJobs };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

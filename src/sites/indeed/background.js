@@ -13,6 +13,7 @@
   const NAVIGATION_ALARM_PREFIX = "indeed-navigation:";
   const CONTENT_FILES = Object.freeze([
     "src/core/storage.js",
+    "src/core/text-match.js",
     "src/sites/indeed/config.js",
     "src/sites/indeed/selectors.js",
     "src/sites/indeed/parse.js",

@@ -42,6 +42,7 @@ async function testIndeedRunLoop() {
     "src/sites/indeed/config.js",
     "src/sites/indeed/selectors.js",
     "src/sites/indeed/parse.js",
+    "src/core/text-match.js",
     "src/sites/indeed/adapter.js",
     "src/core/run-loop.js"
   ]);
@@ -107,7 +108,8 @@ async function testIndeedRunLoop() {
 
 async function testIndeedCollectorSkipTitles() {
   const store = {
-    "indeed:skipTitles": ["Indeed Role"],
+    // "contains" match: "role" skips "Indeed Role"; "Platform Engineer" is unrelated and captured.
+    "indeed:skipTitles": ["role"],
     "runs.indeed": {
       siteId: "indeed",
       runId: "skip-title-test",
@@ -132,7 +134,7 @@ async function testIndeedCollectorSkipTitles() {
       </div>
       <div class="job_seen_beacon">
         <a class="jcs-JobTitle" data-jk="1123456789abcdef" href="/viewjob?jk=1123456789abcdef">
-          <h3 class="jobTitle"><span title="Indeed Role II">Indeed Role II</span></h3>
+          <h3 class="jobTitle"><span title="Platform Engineer">Platform Engineer</span></h3>
         </a>
       </div>
     </div>
@@ -196,6 +198,7 @@ async function testIndeedCollectorSkipTitles() {
     "src/sites/indeed/config.js",
     "src/sites/indeed/selectors.js",
     "src/sites/indeed/parse.js",
+    "src/core/text-match.js",
     "src/sites/indeed/adapter.js",
     "src/core/run-loop.js",
     "src/sites/indeed/collector.js"
@@ -213,10 +216,10 @@ async function testIndeedCollectorSkipTitles() {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   assert.ok(finishedRun, "Indeed collector should finish the test run");
-  assert.deepEqual(savedRecords.map((record) => record.title), ["Indeed Role II"]);
+  assert.deepEqual(savedRecords.map((record) => record.title), ["Platform Engineer"]);
   assert.equal(savedRecords[0].url, "https://in.indeed.com/viewjob?jk=1123456789abcdef");
   dom.window.close();
-  console.log("PASS Indeed collector: configured full-title matches are skipped, similar titles are captured.");
+  console.log("PASS Indeed collector: titles containing a skip phrase are skipped, others are captured.");
 }
 
 async function testIndeedBackground() {
@@ -280,6 +283,7 @@ async function testIndeedBackground() {
     "src/sites/indeed/config.js",
     "src/sites/indeed/selectors.js",
     "src/sites/indeed/parse.js",
+    "src/core/text-match.js",
     "src/sites/indeed/adapter.js",
     "src/sites/indeed/background.js"
   ]);
@@ -379,7 +383,7 @@ async function testIndeedBackground() {
     url: "https://in.indeed.com/viewjob?jk=0123456789abcdef",
     applyType: "Easy Apply",
     postedText: "1 day ago",
-    pubDate: 946684800000,
+    pubDate: null,
     applied: false,
     expired: false,
     pageNumber: 1

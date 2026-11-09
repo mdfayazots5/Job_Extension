@@ -23,6 +23,7 @@ async function run() {
   const store = {};
   const archivedSettings = new Map();
   const archivedStatuses = new Map();
+  let statusListGate = null;
   const getLinkedInJobs = () => Object.fromEntries(
     Object.entries(store.records || {})
       .filter(([key]) => key.startsWith("linkedin:"))
@@ -87,15 +88,20 @@ async function run() {
           };
         }
         if (message.type === "listJobStatuses") {
-          return {
-            ok: true,
-            statuses: [...archivedStatuses.entries()]
-              .filter(([key]) => key.startsWith(`${message.siteId}:`))
-              .map(([key, status]) => ({
-                jobId: key.slice(message.siteId.length + 1),
-                ...status
-              }))
-          };
+          // Like the real host, the archive is read when the request starts; the reply can
+          // arrive much later (statusListGate lets a test hold one reply back).
+          const snapshot = [...archivedStatuses.entries()]
+            .filter(([key]) => key.startsWith(`${message.siteId}:`))
+            .map(([key, status]) => ({
+              jobId: key.slice(message.siteId.length + 1),
+              ...status
+            }));
+          const gate = statusListGate;
+          statusListGate = null;
+          if (gate) {
+            await gate;
+          }
+          return { ok: true, statuses: snapshot };
         }
         if (message.type === "updateJobStatuses") {
           for (const update of message.updates) {
@@ -230,10 +236,82 @@ async function run() {
   );
   assert.deepEqual(
     JSON.parse(JSON.stringify(archivedStatuses.get("linkedin:42"))),
-    { hidden: true, opened: true }
+    { hidden: true, opened: false }
   );
-  assert.deepEqual(JSON.parse(JSON.stringify(store["opened.linkedin"])), { "42": true });
+  assert.deepEqual(JSON.parse(JSON.stringify(store["opened.linkedin"])), { "42": false });
   assert.deepEqual(JSON.parse(JSON.stringify(store["hidden.linkedin"])), { "42": true });
+  store["opened.linkedin"] = { "100": true, "42": true };
+  store["hidden.linkedin"] = { "42": false };
+  archivedStatuses.set("linkedin:100", { opened: false });
+  let statusMapWrites = 0;
+  const originalStatusStorageSet = chrome.storage.local.set;
+  chrome.storage.local.set = async (updates) => {
+    if (
+      Object.prototype.hasOwnProperty.call(updates, "opened.linkedin")
+      || Object.prototype.hasOwnProperty.call(updates, "hidden.linkedin")
+    ) {
+      statusMapWrites += 1;
+    }
+    return originalStatusStorageSet(updates);
+  };
+  await vm.runInContext(
+    `synchronizeJobStatuses({ siteId: "linkedin" })`,
+    context
+  );
+  chrome.storage.local.set = originalStatusStorageSet;
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(store["opened.linkedin"])),
+    { "42": false, "100": false },
+    "A refresh must replace stale local statuses with the shared archive state."
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(store["hidden.linkedin"])),
+    { "42": true },
+    "A refresh must apply archived hidden statuses and remove stale local-only values."
+  );
+  await vm.runInContext(
+    `synchronizeJobStatuses({ siteId: "linkedin" })`,
+    context
+  );
+  assert.equal(
+    statusMapWrites,
+    1,
+    "An unchanged refresh must not rewrite local status maps."
+  );
+
+  // Race: a slow refresh starts, then the user opens a job (results page writes local storage
+  // and sends an update). The refresh's older archive read must never undo the new status,
+  // not even for a moment (each intermediate write would make the job flash back in the list).
+  archivedStatuses.set("linkedin:other-browser", { opened: true });
+  let releaseRefresh;
+  statusListGate = new Promise((resolve) => { releaseRefresh = resolve; });
+  const raceWrites = [];
+  let userOpenedJob = false;
+  storageChanged.addListener((changes) => {
+    if (userOpenedJob && changes["opened.linkedin"]) {
+      raceWrites.push(JSON.parse(JSON.stringify(changes["opened.linkedin"].newValue || {})));
+    }
+  });
+  const slowRefresh = vm.runInContext(`synchronizeJobStatuses({ siteId: "linkedin" })`, context);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  userOpenedJob = true;
+  await chrome.storage.local.set({
+    "opened.linkedin": { ...store["opened.linkedin"], "race-1": true }
+  });
+  const openUpdate = vm.runInContext(
+    `synchronizeJobStatuses({ siteId: "linkedin", updates: [{ jobId: "race-1", opened: true }] })`,
+    context
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  releaseRefresh();
+  await Promise.all([slowRefresh, openUpdate]);
+  assert.ok(raceWrites.length > 0);
+  for (const written of raceWrites) {
+    assert.equal(written["race-1"], true, `a sync wrote opened.linkedin without the new status: ${JSON.stringify(written)}`);
+  }
+  assert.equal(store["opened.linkedin"]["race-1"], true);
+  assert.equal(store["opened.linkedin"]["other-browser"], true, "archive changes still arrive");
+  assert.equal(archivedStatuses.get("linkedin:race-1").opened, true);
   assert.equal(vm.runInContext("JobCollectorConfig.maxJobsPerRun", context), 500);
   assert.equal(vm.runInContext("JobCollectorConfig.maxJobsPerDay", context), 5000);
   assert.equal(vm.runInContext("JobCollectorConfig.maxRunsPerDay", context), undefined);

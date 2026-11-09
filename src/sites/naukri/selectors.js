@@ -62,13 +62,6 @@
       ".job-location",
       ".location span"
     ],
-    skills: [
-      ".tags-gt li",
-      ".keySkills li",
-      ".skills li",
-      ".skill-item",
-      ".job-skill"
-    ],
     walkIn: [
       ".ttc__walk-in",
       ".walkIn",

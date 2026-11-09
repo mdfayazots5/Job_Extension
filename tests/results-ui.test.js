@@ -222,6 +222,11 @@ function createPage(storage, search = "", sharedStatusMessage = null) {
     "summary-reviewing",
     "summary-reviewing-share",
     "summary-fresh",
+    "summary-easy-note",
+    "summary-reviewing-card",
+    "filter-location-hyderabad-count",
+    "filter-location-bengaluru-count",
+    "filter-location-other-count",
     "showing-count"
   ];
   const elements = new Map(ids.map((id) => [id, new FakeElement("div", id)]));
@@ -327,6 +332,7 @@ function createPage(storage, search = "", sharedStatusMessage = null) {
   for (const file of [
     "config.js",
     "src/core/storage.js",
+    "src/core/text-match.js",
     "src/core/native-backup.js",
     "src/sites/linkedin/selectors.js",
     "src/sites/linkedin/metadata.js",
@@ -562,6 +568,8 @@ async function run() {
   assert.equal(elements.get("job-table-body").children.length, 1);
   reviewFilter.value = "";
   await reviewFilter.dispatch("change");
+  // LinkedIn is the only site with the "actively reviewing" signal, so its card stays visible.
+  assert.equal(elements.get("summary-reviewing-card").hidden, false);
 
   elements.get("filter-location-hyderabad").checked = true;
   await elements.get("filter-location-hyderabad").dispatch("change");
@@ -1013,7 +1021,7 @@ async function run() {
   sixPlus.checked = false;
   await sixPlus.dispatch("change");
   await settle();
-  assert.match(naukriPage.elements.get("search").placeholder, /title, company, location, or skill:/);
+  assert.equal(naukriPage.elements.get("search").placeholder, "Search title, company, or location");
   assert.ok(naukriPage.elements.get("run-subtitle").hidden);
   assert.equal(naukriPage.elements.get("site-run-footer").hidden, false);
   assert.equal(naukriPage.elements.get("experience-filter-control").hidden, false);
@@ -1077,14 +1085,10 @@ async function run() {
   naukriPage.elements.get("search").value = "R&D <Systems>";
   await naukriPage.elements.get("search").dispatch("input");
   assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
+  // Skills are no longer searchable: a skill-only term finds nothing.
   naukriPage.elements.get("search").value = "skill:Systems & Design";
   await naukriPage.elements.get("search").dispatch("input");
-  assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
-  naukriPage.elements.get("search").value = "skill:C++ <x>";
-  await naukriPage.elements.get("search").dispatch("input");
-  assert.equal(naukriPage.elements.get("job-table-body").children.length, 1);
-  assert.equal(naukriPage.elements.get("job-table-body").children[0].getAttribute("aria-label")
-    .includes("<Senior & Staff Engineer>"), true);
+  assert.equal(naukriPage.elements.get("job-table-body").children.length, 0);
   naukriPage.elements.get("search").value = "Talent & Co";
   await naukriPage.elements.get("search").dispatch("input");
   assert.equal(naukriPage.elements.get("job-table-body").children.length, 0);
@@ -1125,12 +1129,27 @@ async function run() {
     "ui.naukri.selectedTab": "All"
   }, "?site=naukri");
   await settle();
-  naukriSearchPage.elements.get("search").value = "skill:Java";
+  // ".NET", "dotnet", "dot-net" and "dot net" are one term, whichever spelling the job uses.
+  for (const spelling of [".Net", "dotnet", "dot-net", "Dot Net", "dot ne"]) {
+    naukriSearchPage.elements.get("search").value = spelling;
+    await naukriSearchPage.elements.get("search").dispatch("input");
+    assert.deepEqual(
+      naukriSearchPage.elements.get("job-table-body").children.map((row) => row.getAttribute("aria-label")),
+      ["Dot Net Developer with Angular at Angular Systems"],
+      `search "${spelling}" finds the Dot Net job`
+    );
+  }
+  // A half-typed word has no whole-word hits, so partial-word matches are shown and labelled.
+  naukriSearchPage.elements.get("search").value = "angu";
   await naukriSearchPage.elements.get("search").dispatch("input");
   assert.deepEqual(
     naukriSearchPage.elements.get("job-table-body").children.map((row) => row.getAttribute("aria-label")),
-    ["Backend Engineer at Backend Systems"]
+    ["Dot Net Developer with Angular at Angular Systems"]
   );
+  assert.match(naukriSearchPage.elements.get("showing-count").textContent, /partial-word matches/);
+  naukriSearchPage.elements.get("search").value = "Developer";
+  await naukriSearchPage.elements.get("search").dispatch("input");
+  assert.doesNotMatch(naukriSearchPage.elements.get("showing-count").textContent, /partial-word/);
 
   for (const siteId of ["linkedin", "naukri", "indeed"]) {
     const siteSearchPage = createPage({
@@ -1176,12 +1195,9 @@ async function run() {
     search.value = "Remote";
     await search.dispatch("input");
     assert.deepEqual(resultLabels(), ["QA Specialist at .NET Labs"], `${siteId} searches location`);
-    search.value = "skill:.Net";
-    await search.dispatch("input");
-    assert.deepEqual(resultLabels(), ["Backend Engineer at Acme"], `${siteId} searches only skills`);
     search.value = ".Net";
     await search.dispatch("input");
-    assert.deepEqual(resultLabels(), ["QA Specialist at .NET Labs"], `${siteId} default search excludes skills`);
+    assert.deepEqual(resultLabels(), ["QA Specialist at .NET Labs"], `${siteId} search ignores skills`);
   }
 
   const independentSiteSortPage = createPage({
@@ -1747,9 +1763,16 @@ async function run() {
   await settle();
   assert.equal(indeedPage.elements.get("job-table-body").children.length, 1);
   assert.equal(indeedPage.storage["ui.indeed.filters"].locations[0], "other");
+  // With a location filter on, the cards also show the filtered figures that match the tabs.
+  assert.match(indeedPage.elements.get("summary-total-note").textContent, /· \d+ match filters$/);
+  assert.match(indeedPage.elements.get("summary-easy-note").textContent, /^\d+ match your filters/);
+  assert.match(indeedPage.elements.get("filter-location-other-count").textContent, /^\(\d+\)$/);
+  assert.equal(indeedPage.elements.get("summary-reviewing-card").hidden, true);
   indeedPage.elements.get("filter-location-other").checked = false;
   await indeedPage.elements.get("filter-location-other").dispatch("change");
   await settle();
+  assert.doesNotMatch(indeedPage.elements.get("summary-total-note").textContent, /match filters/);
+  assert.equal(indeedPage.elements.get("summary-easy-note").textContent, "Jobs with an in-platform application");
   assert.deepEqual(
     indeedPage.elements.get("column-headings").children.map((heading) => heading.textContent),
     ["", "#", "Role", "Company", "Location", "Salary", "Type", "Posted↓", "Apply"]
@@ -1759,6 +1782,10 @@ async function run() {
   await indeedPage.elements.get("company-tab").dispatch("click");
   let sponsoredRows = indeedPage.elements.get("job-table-body").children;
   assert.equal(sponsoredRows.length, 1);
+  assert.equal(
+    findAll(sponsoredRows[0], (item) => item.className === "apply-link")[0].attributes["data-apply-type"],
+    "company"
+  );
   assert.equal(findAll(sponsoredRows[0], (item) => item.className === "posted-relative")[0].textContent, "No date (sponsored)");
   assert.equal(findAll(sponsoredRows[0], (item) => item.className.includes("sponsored-chip"))[0].textContent, "Sponsored");
   await indeedPage.elements.get("easy-tab").dispatch("click");
@@ -1895,6 +1922,9 @@ async function run() {
   assert.equal(indeedPage.elements.get("indeed-site-count").textContent, "4");
   assert.equal(indeedPage.elements.get("parse-warning-footer").hidden, true);
   assert.equal(indeedPage.elements.get("parse-warning-footer").textContent, "");
+  // Dates are relative to the real clock: "Fresh today" counts postings from the last 24h.
+  const freshNow = Date.now();
+  const hoursAgo = (hours) => new Date(freshNow - hours * 60 * 60 * 1000).toISOString();
   const justPostedIndeedPage = createPage({
     records: {
       "indeed:3123456789abcdef": {
@@ -1906,7 +1936,8 @@ async function run() {
         url: "https://in.indeed.com/viewjob?jk=3123456789abcdef",
         applyType: "Easy Apply",
         postedText: "Just posted",
-        postedDateEstimate: "2026-10-20T00:00:00.000Z"
+        postedDateEstimate: hoursAgo(1),
+        capturedAt: hoursAgo(0)
       },
       "indeed:4123456789abcdef": {
         siteId: "indeed",
@@ -1917,7 +1948,8 @@ async function run() {
         url: "https://in.indeed.com/viewjob?jk=4123456789abcdef",
         applyType: "Company Site",
         postedText: "Today",
-        postedDateEstimate: "2026-10-20T00:00:00.000Z"
+        postedDateEstimate: hoursAgo(12),
+        capturedAt: hoursAgo(0)
       },
       "indeed:5123456789abcdef": {
         siteId: "indeed",
@@ -1928,7 +1960,8 @@ async function run() {
         url: "https://in.indeed.com/viewjob?jk=5123456789abcdef",
         applyType: "Company Site",
         postedText: "2 days ago",
-        postedDateEstimate: "2026-10-19T00:00:00.000Z"
+        postedDateEstimate: hoursAgo(48),
+        capturedAt: hoursAgo(0)
       }
     },
     "ui.lastSite": "indeed",
@@ -2096,7 +2129,7 @@ async function run() {
   assert.match(reportHtml, /id="easy-tab"/);
   assert.match(reportHtml, /id="company-tab"/);
   assert.match(reportHtml, /id="search"/);
-  assert.match(reportHtml, /skill:\\s\*/);
+  assert.doesNotMatch(reportHtml, /skill:/);
   assert.match(reportHtml, /id="applicant-review-filter"/);
   assert.match(reportHtml, /applicantReviewStatus/);
   assert.match(reportHtml, /id="hide-opened"/);
@@ -2144,7 +2177,7 @@ async function run() {
   assert.match(indeedReport, /data-location="other"/);
   assert.doesNotMatch(indeedReport, /Skipped: \d+ applied, \d+ expired|Dates: \d+ from list data/);
   assert.match(indeedReport, /visited-chip/);
-  assert.match(indeedReport, /skill:\\s\*/);
+  assert.doesNotMatch(indeedReport, /skill:/);
   const indeedReportScript = indeedReport.match(/<script>([\s\S]*?)<\/script>/);
   assert.ok(indeedReportScript);
   assert.doesNotThrow(() => new vm.Script(indeedReportScript[1]));
@@ -2210,6 +2243,19 @@ async function run() {
   });
   await settle();
   assert.equal(sharedStatusPage.elements.get("job-table-body").children.length, 1);
+  const unchangedStatusRow = sharedStatusPage.elements.get("job-table-body").children[0];
+  await sharedStatusPage.updateStorage("diagnostics.linkedin", [{ event: "status-sync" }]);
+  await sharedStatusPage.updateStorage("opened.naukri", { "other-site-job": true });
+  await sharedStatusPage.updateStorage("records", {
+    ...sharedStatusPage.storage.records,
+    "naukri:other-site-job": job("other-site-job", "Easy Apply")
+  });
+  await sharedStatusPage.refreshSharedJobStatuses();
+  assert.strictEqual(
+    sharedStatusPage.elements.get("job-table-body").children[0],
+    unchangedStatusRow,
+    "Unrelated storage changes and unchanged status syncs must not rebuild the active table."
+  );
   sharedStatus.openedJobs["888"] = true;
   await sharedStatusPage.refreshSharedJobStatuses();
   assert.equal(sharedStatusPage.elements.get("job-table-body").children.length, 0);
@@ -2223,6 +2269,48 @@ async function run() {
   assert.equal(sharedStatus.openedJobs["888"], false);
   await sharedStatusPage.elements.get("view-hidden-jobs").dispatch("click");
   assert.equal(sharedStatusPage.elements.get("job-table-body").children.length, 1);
+
+  // While an Apply click is still being saved, a stale opened.linkedin write (from a slower
+  // sync elsewhere) must not make the job flash back into the list.
+  let releaseStatusSave;
+  const statusSaveGate = new Promise((resolve) => { releaseStatusSave = resolve; });
+  const pendingStatusPage = createPage({
+    records: {
+      "linkedin:900": job("900", "Easy Apply"),
+      "linkedin:901": job("901", "Easy Apply")
+    },
+    "ui.lastSite": "linkedin",
+    "ui.linkedin.selectedTab": "All"
+  }, "", async (message) => {
+    if (message.updates) {
+      await statusSaveGate;
+      return {
+        ok: true,
+        openedJobs: Object.fromEntries(message.updates.map((update) => [update.jobId, update.opened])),
+        hiddenJobs: {}
+      };
+    }
+    return { ok: true, openedJobs: {}, hiddenJobs: {} };
+  });
+  await settle();
+  assert.equal(pendingStatusPage.elements.get("job-table-body").children.length, 2);
+  const pendingApply = findAll(
+    pendingStatusPage.elements.get("job-table-body").children
+      .find((row) => row.getAttribute("aria-label").startsWith("Role 900") || row.textContent.includes("900")),
+    (item) => item.className === "apply-link"
+  )[0];
+  void pendingApply.dispatch("click");
+  await settle();
+  assert.equal(pendingStatusPage.elements.get("job-table-body").children.length, 1);
+  await pendingStatusPage.updateStorage("opened.linkedin", {});
+  assert.equal(
+    pendingStatusPage.elements.get("job-table-body").children.length,
+    1,
+    "A stale status write must not bring back a job whose Apply click is still saving."
+  );
+  releaseStatusSave();
+  await settle();
+  assert.equal(pendingStatusPage.elements.get("job-table-body").children.length, 1);
 
   const failedStatusPage = createPage({
     records: { "linkedin:889": job("889", "Easy Apply") },

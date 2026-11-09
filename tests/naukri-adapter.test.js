@@ -10,6 +10,7 @@ const context = vm.createContext({ URL, Date });
 for (const file of [
   "src/sites/naukri/config.js",
   "src/sites/naukri/selectors.js",
+  "src/core/text-match.js",
   "src/sites/naukri/adapter.js"
 ]) {
   vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
@@ -21,7 +22,7 @@ assert.equal(context.JobCollectorNaukriConfig.excludedRoleTerms, undefined);
 assert.equal(adapter.shouldSkipRole({ title: "Software Engineer" }), false);
 assert.equal(adapter.shouldSkipRole({ title: "Python Developer" }, ["Python Developer"]), true);
 assert.equal(adapter.shouldSkipRole({ title: "Pythonista Developer" }, ["Python"]), false);
-assert.equal(adapter.shouldSkipRole({ title: "Customer Support Executive" }, ["Customer Support"]), false);
+assert.equal(adapter.shouldSkipRole({ title: "Customer Support Executive" }, ["Customer Support"]), true);
 const fixturePath = path.join(__dirname, "fixtures", "naukri-search-results.html");
 const fixture = new JSDOM(fs.readFileSync(fixturePath, "utf8"));
 const capturedAt = "2026-10-17T10:32:40.983Z";
@@ -106,7 +107,7 @@ check("modern card postedBy is parsed", modernRecord.postedBy, "Modern Consult",
 check("modern card experience is parsed", modernRecord.experience, "3-5 Yrs", modernRecord.experience);
 check("modern card work mode and locations are parsed", { workMode: modernRecord.workMode, locations: modernRecord.locations }, { workMode: "Hybrid", locations: ["Hyderabad", "Bengaluru"] }, modernRecord.locationRaw);
 check("modern card salary is parsed", modernRecord.salary, "10-15 Lacs PA", modernRecord.salary);
-check("modern card skill list is parsed", modernRecord.skills, ["ASP.NET", "SQL"], modernRecord.skills);
+check("skills are not captured", "skills" in modernRecord, false, modernRecord.skills);
 check("modern card posted date is estimated", modernRecord.postedDateEstimate, "2026-10-15T10:32:40.983Z", modernRecord.postedText);
 const cardFlagRecords = adapter.parsePage({
   doc: new JSDOM(`

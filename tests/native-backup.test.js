@@ -215,7 +215,7 @@ async function run() {
   assert.deepEqual(JSON.parse(JSON.stringify(store["linkedin:skipTitles"])), ["Archived exact title"]);
   assert.deepEqual(JSON.parse(JSON.stringify(store["opened.linkedin"])), {
     "1": true,
-    "2": true
+    "2": false
   });
   assert.deepEqual(JSON.parse(JSON.stringify(store["hidden.indeed"])), { "0123456789abcdef": true });
   assert.deepEqual(JSON.parse(JSON.stringify(store["hidden.linkedin"])), { "2": true });
@@ -237,7 +237,7 @@ async function run() {
   });
   assert.equal(archivedSettings.has("hidden.linkedin"), false);
   assert.deepEqual(archivedStatuses.get("linkedin:1"), { opened: true });
-  assert.deepEqual(archivedStatuses.get("linkedin:2"), { opened: true, hidden: true });
+  assert.deepEqual(archivedStatuses.get("linkedin:2"), { opened: false, hidden: true });
   assert.deepEqual(archivedStatuses.get("indeed:0123456789abcdef"), { hidden: true });
   await context.JobCollectorNativeBackup.updateJobStatus("linkedin", "1", "opened", false);
   await context.JobCollectorNativeBackup.updateJobStatuses("linkedin", [
@@ -247,7 +247,7 @@ async function run() {
   const sharedLinkedInStatuses = await context.JobCollectorNativeBackup.getJobStatuses("linkedin");
   assert.deepEqual(JSON.parse(JSON.stringify(sharedLinkedInStatuses)), {
     "1": { opened: false },
-    "2": { opened: true, hidden: true },
+    "2": { opened: false, hidden: true },
     "3": { hidden: true }
   });
   assert.equal(context.JobCollectorNativeBackup.isBackupSettingKey("opened.linkedin"), false);

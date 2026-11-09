@@ -176,6 +176,17 @@ tr:focus-visible {
   border-color: #8bb0ff;
 }
 
+.summary-card[hidden] {
+  display: none;
+}
+
+/* Sites without the "actively reviewing" card get three evenly spaced cards (desktop/tablet). */
+@media (min-width: 721px) {
+  .summary-cards:has(> .summary-card[hidden]) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 .summary-label {
   color: #62758d;
   font-size: 0.55rem;
@@ -747,7 +758,7 @@ body[data-active-tab="Company Site"] .search-control input:focus {
 }
 
 .table-wrap {
-  max-height: min(760px, calc(100vh - 230px));
+  max-height: var(--table-fit-height, min(760px, calc(100vh - 230px)));
   min-height: 360px;
   overflow: auto;
   border: 1px solid var(--border);
@@ -858,7 +869,7 @@ body[data-active-tab="Company Site"] .sort-indicator {
 }
 
 .role-cell {
-  width: 25%;
+  width: 31%;
   font-size: 0.91rem;
   font-weight: 650;
   line-height: 1.4;
@@ -911,8 +922,14 @@ body[data-active-tab="Company Site"] .sort-indicator {
   color: #17633a;
 }
 
+/* "No status shown" on most rows is noise that pushes titles onto extra lines; only the positive
+   "Actively reviewing" signal is shown. The review-status dropdown still filters on both. */
+.review-status-tag:not(.is-active) {
+  display: none;
+}
+
 .company-cell {
-  width: 22%;
+  width: 19%;
 }
 
 .company-row {
@@ -952,7 +969,7 @@ body[data-active-tab="Company Site"] .sort-indicator {
 }
 
 .location-cell {
-  width: 17%;
+  width: 15%;
   color: var(--muted);
   line-height: 1.4;
 }
@@ -1030,33 +1047,34 @@ body[data-active-tab="Company Site"] .sort-indicator {
   width: 4%;
 }
 
+/* Salary (~19% filled) and Type (~39%) are sparse on Indeed; give the width to Role/Company. */
 [data-site="indeed"] .role-cell {
-  width: 18%;
+  width: 23%;
 }
 
 [data-site="indeed"] .company-cell {
-  width: 16%;
+  width: 18%;
 }
 
 [data-site="indeed"] .location-cell {
-  width: 15%;
+  width: 14%;
 }
 
 [data-site="indeed"] .salary-cell {
-  width: 13%;
+  width: 10%;
 }
 
 [data-site="indeed"] .type-cell {
-  width: 9%;
+  width: 7%;
 }
 
 [data-site="indeed"] .posted-cell {
-  width: 15%;
+  width: 14%;
   font-variant-numeric: tabular-nums;
 }
 
 [data-site="indeed"] .table-wrap {
-  max-height: min(760px, calc(100vh - 285px));
+  max-height: var(--table-fit-height, min(760px, calc(100vh - 285px)));
   min-height: min(360px, calc(100vh - 285px));
 }
 
@@ -1066,7 +1084,7 @@ body[data-active-tab="Company Site"] .sort-indicator {
 }
 
 .posted-cell {
-  width: 21%;
+  width: 20%;
 }
 
 .posted-content {
@@ -1150,6 +1168,27 @@ body[data-active-tab="Company Site"] .sort-indicator {
 
 body[data-active-tab="Company Site"] .apply-link {
   background: var(--company);
+}
+
+/* Company-site applications leave the platform: outlined button with an external-link arrow.
+   The `body` prefix is required to outrank `body[data-active-tab="Company Site"] .apply-link`,
+   otherwise the Company tab keeps the blue fill AND gets blue text (blank button). */
+body a.apply-link[data-apply-type="company"] {
+  border: 1px solid var(--company);
+  background: transparent;
+  color: var(--company);
+}
+
+body a.apply-link[data-apply-type="company"]::after {
+  content: "\2197";
+  margin-left: 4px;
+  font-weight: 600;
+}
+
+.filter-count {
+  color: #718198;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .apply-link[aria-disabled="true"] {

@@ -113,22 +113,7 @@
     return `${getOrigin()}/viewjob?jk=${encodeURIComponent(jobId)}`;
   }
 
-  function getPostedDateEstimate(raw, postedApprox) {
-    if (postedApprox) {
-      return null;
-    }
-    const captureTimestamp = typeof raw.capturedAt === "string"
-      ? Date.parse(raw.capturedAt)
-      : NaN;
-    if (Number.isFinite(captureTimestamp)) {
-      if (/^(?:just posted|today)$/i.test(String(raw.postedText || "").trim())) {
-        return new Date(captureTimestamp).toISOString();
-      }
-      const daysAgo = String(raw.postedText || "").trim().match(/^(\d+)\s+days?\s+ago$/i);
-      if (daysAgo) {
-        return new Date(captureTimestamp - Number(daysAgo[1]) * 24 * 60 * 60 * 1000).toISOString();
-      }
-    }
+  function getPublishedTimestamp(raw) {
     if (raw.pubDate === null || raw.pubDate === undefined) {
       return null;
     }
@@ -138,11 +123,64 @@
     if (Number.isFinite(timestamp) && timestamp > 0 && timestamp < 1e11) {
       timestamp *= 1000;
     }
-    if (!Number.isFinite(timestamp)) {
+    return Number.isFinite(timestamp)
+      && timestamp > 0
+      && !Number.isNaN(new Date(timestamp).getTime())
+      ? timestamp
+      : null;
+  }
+
+  function getPostedDateEstimate(raw, postedApprox) {
+    if (postedApprox) {
       return null;
     }
-    const date = new Date(timestamp);
-    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+    const publishedAt = getPublishedTimestamp(raw);
+    if (publishedAt !== null) {
+      return new Date(publishedAt).toISOString();
+    }
+
+    const captureTimestamp = typeof raw.capturedAt === "string"
+      ? Date.parse(raw.capturedAt)
+      : NaN;
+    if (!Number.isFinite(captureTimestamp)) {
+      return null;
+    }
+    if (/^(?:just posted|today)$/i.test(String(raw.postedText || "").trim())) {
+      return new Date(captureTimestamp).toISOString();
+    }
+    const daysAgo = String(raw.postedText || "").trim().match(/^(\d+)\s+days?\s+ago$/i);
+    if (daysAgo) {
+      return new Date(captureTimestamp - Number(daysAgo[1]) * 24 * 60 * 60 * 1000).toISOString();
+    }
+    return null;
+  }
+
+  function getPostedText(raw, postedDateEstimate) {
+    const postedText = typeof raw.postedText === "string" ? raw.postedText.trim() : "";
+    if (!/^(?:just posted|today)$/i.test(postedText)) {
+      return postedText || null;
+    }
+    const capturedAt = typeof raw.capturedAt === "string" ? Date.parse(raw.capturedAt) : NaN;
+    const publishedAt = Date.parse(String(postedDateEstimate || ""));
+    if (!Number.isFinite(capturedAt) || !Number.isFinite(publishedAt)) {
+      return postedText;
+    }
+    const publishedDate = new Date(publishedAt);
+    const capturedDate = new Date(capturedAt);
+    const publishedDay = Date.UTC(
+      publishedDate.getFullYear(),
+      publishedDate.getMonth(),
+      publishedDate.getDate()
+    );
+    const capturedDay = Date.UTC(
+      capturedDate.getFullYear(),
+      capturedDate.getMonth(),
+      capturedDate.getDate()
+    );
+    const daysAgo = Math.floor((capturedDay - publishedDay) / (24 * 60 * 60 * 1000));
+    return daysAgo > 0
+      ? `${daysAgo} day${daysAgo === 1 ? "" : "s"} ago`
+      : postedText;
   }
 
   function normalize(raw) {
@@ -164,6 +202,7 @@
     const sponsored = raw.sponsored === true;
     const postedDateEstimate = getPostedDateEstimate(raw, postedApprox);
     const hasPostedDate = postedDateEstimate !== null;
+    const normalizedPostedText = getPostedText(raw, postedDateEstimate);
 
     return {
       ...raw,
@@ -174,7 +213,7 @@
       postedType: sponsored ? "Unknown" : raw.postedType || "Unknown",
       postedText: sponsored
         ? null
-        : postedText || (hasPostedDate ? null : "Date unavailable"),
+        : normalizedPostedText || (hasPostedDate ? null : "Date unavailable"),
       postedApprox: !sponsored && postedApprox,
       postedDateEstimate,
       firstSeenAt: sponsored
@@ -193,13 +232,11 @@
     return applied || expired ? { applied, expired } : null;
   }
 
+  // Skip Title is a "contains" (LIKE) match using the shared rule in src/core/text-match.js:
+  // case, spacing, punctuation and symbol spelling are ignored, whole words only.
+  // "Test Engineer" skips "Senior Test Engineer - Automation"; "Java" keeps "JavaScript Developer".
   function shouldSkipRole(record, skipTitles = []) {
-    const title = String(record && record.title || "").trim().toLocaleLowerCase();
-    return title !== "" && Array.isArray(skipTitles) && skipTitles.some((skipTitle) => (
-      typeof skipTitle === "string"
-      && skipTitle.trim() !== ""
-      && skipTitle.trim().toLocaleLowerCase() === title
-    ));
+    return global.JobCollectorTextMatch.findContainedPhrase(record && record.title, skipTitles) !== null;
   }
 
   global.JobCollectorIndeedAdapter = Object.freeze({

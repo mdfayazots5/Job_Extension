@@ -67,6 +67,87 @@ internal static class Program
             "Could not find the Job Extensions folder containing manifest.json and .git.");
     }
 
+    // Opened/hidden statuses live in their own small append-only file next to the main archive.
+    // Results pages poll statuses often; reading them from the ~100 MB job archive took seconds
+    // per poll and made overlapping status syncs likely.
+    private static string FindStatusPath() =>
+        Path.Combine(Path.GetDirectoryName(FindBackupPath())!, "job-status-backup.jsonl");
+
+    // On first use, copies every status already in the main archive (status lines and legacy
+    // opened./hidden. setting maps, in their original order so "latest wins" is unchanged) into
+    // the status file. Built in a temp file and moved into place, so a concurrent host process
+    // never sees a partial file; whichever process moves first wins and the others discard theirs.
+    private static async Task<string> EnsureStatusFileAsync()
+    {
+        var statusPath = FindStatusPath();
+        if (File.Exists(statusPath))
+        {
+            return statusPath;
+        }
+        var archivePath = FindBackupPath();
+        var tempPath = $"{statusPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await using (var writer = new StreamWriter(tempPath, append: false, new UTF8Encoding(false)))
+            {
+                writer.NewLine = "\n";
+                if (File.Exists(archivePath))
+                {
+                    foreach (var line in await ReadArchiveLinesWithRetryAsync(archivePath))
+                    {
+                        if (IsStatusArchiveLine(line))
+                        {
+                            await writer.WriteLineAsync(line);
+                        }
+                    }
+                }
+            }
+            try
+            {
+                File.Move(tempPath, statusPath);
+            }
+            catch (IOException) when (File.Exists(statusPath))
+            {
+                // Another host process finished the same one-time copy first.
+            }
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+        return statusPath;
+    }
+
+    private static bool IsStatusArchiveLine(string line)
+    {
+        // Cheap pre-filter; job records (the bulk of the archive) are never parsed here.
+        if (!line.Contains("\"kind\":\"status\"", StringComparison.Ordinal)
+            && !line.Contains("\"kind\":\"setting\"", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        try
+        {
+            var entry = JsonNode.Parse(line)?.AsObject();
+            var kind = entry?["kind"]?.GetValue<string>();
+            if (kind == "status")
+            {
+                return true;
+            }
+            var key = kind == "setting" ? entry?["key"]?.GetValue<string>() : null;
+            return key is not null
+                && (key.StartsWith("opened.", StringComparison.Ordinal)
+                    || key.StartsWith("hidden.", StringComparison.Ordinal));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static HashSet<string> BuildSupportedSettings()
     {
         var settings = new HashSet<string>(StringComparer.Ordinal) { "ui.lastSite" };
@@ -171,7 +252,7 @@ internal static class Program
         }
 
         await using var stream = await OpenAppendStreamWithRetryAsync(
-            FindBackupPath(),
+            await EnsureStatusFileAsync(),
             FileShare.None
         );
         foreach (var bytes in entries)
@@ -191,7 +272,7 @@ internal static class Program
         }
 
         var latest = new Dictionary<string, (bool? Opened, bool? Hidden)>(StringComparer.Ordinal);
-        var path = FindBackupPath();
+        var path = await EnsureStatusFileAsync();
         if (File.Exists(path))
         {
             var lineNumber = 0;
@@ -297,10 +378,11 @@ internal static class Program
                 item["hidden"] = status.Hidden.Value;
             }
             statuses.Add(item);
-            if (Encoding.UTF8.GetByteCount(statuses.ToJsonString()) > MaximumResponseBytes)
-            {
-                throw new InvalidDataException("The shared job statuses exceed the safe response size.");
-            }
+        }
+        // Checked once: re-serializing the growing list after every item was quadratic.
+        if (Encoding.UTF8.GetByteCount(statuses.ToJsonString()) > MaximumResponseBytes)
+        {
+            throw new InvalidDataException("The shared job statuses exceed the safe response size.");
         }
         return new JsonObject { ["ok"] = true, ["statuses"] = statuses };
     }

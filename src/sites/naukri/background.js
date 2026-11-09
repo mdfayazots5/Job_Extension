@@ -13,6 +13,7 @@
   const NAVIGATION_ALARM_PREFIX = "naukri-navigation:";
   const CONTENT_FILES = Object.freeze([
     "src/core/storage.js",
+    "src/core/text-match.js",
     "src/sites/naukri/config.js",
     "src/sites/naukri/selectors.js",
     "src/sites/naukri/adapter.js",

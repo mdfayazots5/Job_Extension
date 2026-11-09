@@ -49,6 +49,7 @@
       "js": [
         "config.js",
         "src/core/storage.js",
+        "src/core/text-match.js",
         "src/sites/linkedin/selectors.js",
         "src/sites/linkedin/metadata.js",
         "src/sites/linkedin/adapter.js",
@@ -64,6 +65,7 @@
       ],
       "js": [
         "src/core/storage.js",
+        "src/core/text-match.js",
         "src/sites/naukri/config.js",
         "src/sites/naukri/selectors.js",
         "src/sites/naukri/adapter.js",
@@ -80,6 +82,7 @@
       ],
       "js": [
         "src/core/storage.js",
+        "src/core/text-match.js",
         "src/sites/indeed/config.js",
         "src/sites/indeed/selectors.js",
         "src/sites/indeed/parse.js",

@@ -17,6 +17,7 @@ for (const file of [
   "config.js",
   "src/sites/linkedin/selectors.js",
   "src/sites/linkedin/metadata.js",
+  "src/core/text-match.js",
   "src/sites/linkedin/adapter.js",
   "src/sites/indeed/config.js",
   "src/sites/indeed/selectors.js",
@@ -42,7 +43,8 @@ assert.equal(context.JobCollectorConfig.excludedRoleTerms, undefined);
 assert.equal(adapter.shouldSkipRole({ title: "Java Developer" }), false);
 assert.equal(adapter.shouldSkipRole({ title: "Java Developer" }, ["Java Developer"]), true);
 assert.equal(adapter.shouldSkipRole({ title: "JavaScript Developer" }, ["Java"]), false);
-assert.equal(adapter.shouldSkipRole({ title: "Customer Support Engineer" }, ["Customer Support"]), false);
+assert.equal(adapter.shouldSkipRole({ title: "Customer Support Engineer" }, ["Customer Support"]), true);
+assert.equal(adapter.shouldSkipRole({ title: "Support Customer Engineer" }, ["Customer Support"]), false);
 assert.deepEqual(
   JSON.parse(JSON.stringify(adapter.normalize({ jobId: "123", title: "Engineer" }))),
   {
