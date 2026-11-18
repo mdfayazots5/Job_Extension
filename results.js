@@ -372,6 +372,7 @@ function renderSiteCounts(namespacedRecords) {
   elements.linkedinSite.classList.toggle("is-empty", siteCounts.linkedin === 0);
   elements.naukriSite.classList.toggle("is-empty", siteCounts.naukri === 0);
   elements.indeedSite.classList.toggle("is-empty", siteCounts.indeed === 0);
+  renderDemoBanner(records);
 }
 
 function getRecords() {
@@ -586,7 +587,27 @@ function getLinkedInJobUrl(record) {
 }
 
 function getApplyUrl(record, tab) {
+  if (record && record.demo === true) {
+    // Sample jobs from the welcome tour link to the site's search page, never to a job posting.
+    return validHttpUrl(record.url);
+  }
   return validHttpUrl(SITE_ADAPTER.ui.applyUrl({ ...record, applyType: tab }));
+}
+
+function renderDemoBanner(namespacedRecords) {
+  const banner = document.getElementById("demo-banner");
+  if (!banner) {
+    return;
+  }
+  const records = namespacedRecords && typeof namespacedRecords === "object" ? namespacedRecords : {};
+  const demoCount = Object.entries(records).filter(([key, record]) => (
+    key.startsWith(`${SITE_ID}:`) && record && record.demo === true
+  )).length;
+  banner.hidden = demoCount === 0;
+}
+
+function openOnboardingPage(hash = "") {
+  void chrome.tabs.create({ url: chrome.runtime.getURL(`onboarding/welcome.html${hash}`) });
 }
 
 async function readSiteJobs() {
@@ -3091,6 +3112,21 @@ elements.settingsButton.addEventListener("click", () => {
   const open = elements.settingsMenu.hidden;
   elements.settingsMenu.hidden = !open;
   elements.settingsButton.setAttribute("aria-expanded", String(open));
+});
+document.getElementById("tour-button")?.addEventListener("click", () => {
+  closeSettingsMenu();
+  openOnboardingPage();
+});
+document.getElementById("demo-howto-button")?.addEventListener("click", () => {
+  openOnboardingPage(`#site=${SITE_ID}`);
+});
+document.getElementById("demo-clear-button")?.addEventListener("click", () => {
+  if (!globalThis.JobCollectorDemoData) {
+    return;
+  }
+  void globalThis.JobCollectorDemoData.clear().catch((error) => {
+    setFeedback(`Could not clear sample data: ${error.message}`);
+  });
 });
 elements.historyButton.addEventListener("click", () => {
   closeSettingsMenu();

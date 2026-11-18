@@ -26,13 +26,45 @@
   const ARCHIVED_SETTING_KEY_SET = new Set([...SETTINGS_KEYS, ...STATUS_SETTING_KEYS]);
   let restorePromise = null;
   let nativeRequestQueue = Promise.resolve();
+  // The native host is an optional power-user feature (cross-profile backup). Users who load the
+  // extension unpacked without installing it must get a fully working local-only extension.
+  // "unknown" -> first request decides; "unavailable" is cached for the worker's lifetime.
+  let hostAvailability = "unknown";
+  const HOST_MISSING_PATTERN = /native messaging host not found|native messaging host is forbidden|host is unavailable/i;
+
+  class NativeHostUnavailableError extends Error {
+    constructor(message) {
+      super(message || "The optional local job-history backup host is not installed.");
+      this.name = "NativeHostUnavailableError";
+      this.hostUnavailable = true;
+    }
+  }
+
+  function isHostUnavailableError(error) {
+    return Boolean(error && error.hostUnavailable === true);
+  }
 
   async function sendRequest(message) {
+    if (hostAvailability === "unavailable") {
+      throw new NativeHostUnavailableError();
+    }
     if (!global.chrome || !global.chrome.runtime
       || typeof global.chrome.runtime.sendNativeMessage !== "function") {
-      throw new Error("The local job-history backup host is unavailable.");
+      hostAvailability = "unavailable";
+      throw new NativeHostUnavailableError();
     }
-    const response = await global.chrome.runtime.sendNativeMessage(HOST_NAME, message);
+    let response;
+    try {
+      response = await global.chrome.runtime.sendNativeMessage(HOST_NAME, message);
+    } catch (error) {
+      const text = error && typeof error.message === "string" ? error.message : String(error);
+      if (HOST_MISSING_PATTERN.test(text)) {
+        hostAvailability = "unavailable";
+        throw new NativeHostUnavailableError(text);
+      }
+      throw error;
+    }
+    hostAvailability = "available";
     if (!response || response.ok !== true) {
       throw new Error(response && typeof response.error === "string"
         ? response.error
@@ -45,6 +77,18 @@
     const operation = nativeRequestQueue.then(() => sendRequest(message));
     nativeRequestQueue = operation.catch(() => {});
     return operation;
+  }
+
+  // Write operations are best-effort mirrors: without the host they silently do nothing.
+  async function sendOptional(message) {
+    try {
+      return await send(message);
+    } catch (error) {
+      if (isHostUnavailableError(error)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   function validateRecord(siteId, record) {
@@ -65,7 +109,7 @@
 
   async function upsertRecord(siteId, record) {
     validateRecord(siteId, record);
-    await send({ type: "upsert", siteId, record });
+    await sendOptional({ type: "upsert", siteId, record });
   }
 
   async function upsertRecords(records) {
@@ -78,7 +122,7 @@
       }
       validateRecord(item.siteId, item.record);
     }
-    await send({ type: "upsertRecords", records });
+    await sendOptional({ type: "upsertRecords", records });
   }
 
   function validateSettingsKey(key) {
@@ -95,7 +139,7 @@
     if (value === undefined) {
       throw new Error("A setting value is required for backup.");
     }
-    await send({ type: "upsertSetting", key, value });
+    await sendOptional({ type: "upsertSetting", key, value });
   }
 
   function validateJobStatus(siteId, jobId, statusName, value) {
@@ -145,10 +189,22 @@
     if (normalizedUpdates.length > 1000) {
       throw new Error("The job-status update batch is too large.");
     }
-    await send({ type: "updateJobStatuses", siteId, updates: normalizedUpdates });
+    await sendOptional({ type: "updateJobStatuses", siteId, updates: normalizedUpdates });
   }
 
+  // Returns null when the optional host is not installed ("no shared source": callers keep local state).
   async function getJobStatuses(siteId) {
+    try {
+      return await readJobStatuses(siteId);
+    } catch (error) {
+      if (isHostUnavailableError(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async function readJobStatuses(siteId) {
     if (!SUPPORTED_SITES.has(siteId)) {
       throw new Error("A supported site ID is required to read shared job statuses.");
     }
@@ -414,6 +470,18 @@
     try {
       return await restorePromise;
     } catch (error) {
+      if (isHostUnavailableError(error)) {
+        // Cache the "skipped" result so the host is not probed again this worker lifetime.
+        restorePromise = Promise.resolve({
+          restored: 0,
+          synchronized: 0,
+          restoredSettings: 0,
+          synchronizedSettings: 0,
+          restoredStatuses: 0,
+          skipped: "host-unavailable"
+        });
+        return restorePromise;
+      }
       restorePromise = null;
       throw error;
     }
@@ -422,7 +490,7 @@
   async function getAllJobStatuses() {
     const statuses = {};
     for (const siteId of SUPPORTED_SITES) {
-      statuses[siteId] = await getJobStatuses(siteId);
+      statuses[siteId] = await readJobStatuses(siteId);
     }
     return statuses;
   }
@@ -435,6 +503,8 @@
     updateJobStatuses,
     getJobStatuses,
     isBackupSettingKey: (key) => SETTINGS_KEY_SET.has(key),
+    isHostUnavailableError,
+    getHostAvailability: () => hostAvailability,
     restoreArchive
   });
 })(globalThis);

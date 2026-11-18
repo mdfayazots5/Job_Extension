@@ -56,15 +56,16 @@ internal static class Program
         var current = new DirectoryInfo(AppContext.BaseDirectory);
         while (current is not null)
         {
-            if (File.Exists(Path.Combine(current.FullName, "manifest.json"))
-                && Directory.Exists(Path.Combine(current.FullName, ".git")))
+            // The extension root is the first ancestor with manifest.json. A .git folder is not
+            // required, so "Download ZIP" copies of the repository work too.
+            if (File.Exists(Path.Combine(current.FullName, "manifest.json")))
             {
                 return Path.Combine(current.FullName, "job-history-backup.jsonl");
             }
             current = current.Parent;
         }
         throw new DirectoryNotFoundException(
-            "Could not find the Job Extensions folder containing manifest.json and .git.");
+            "Could not find the Job Extensions folder containing manifest.json.");
     }
 
     // Opened/hidden statuses live in their own small append-only file next to the main archive.

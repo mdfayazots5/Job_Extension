@@ -2,6 +2,7 @@
   "name": "joblink",
   "private": true,
   "scripts": {
+    "test": "node tests/run-all.js",
     "test:naukri": "node tests/naukri-adapter.test.js && node tests/naukri-api-observer.test.js && node tests/naukri-timing.test.js && node tests/naukri-runtime.test.js && node tests/naukri-content.test.js && node tests/results-ui.test.js"
   },
   "devDependencies": {

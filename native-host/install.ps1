@@ -2,9 +2,10 @@ param(
   # One or more extension IDs allowed to talk to the host. Each browser can assign
   # its own ID to an unpacked extension, so pass every ID shown on the browsers'
   # extensions pages, e.g. -ExtensionId id1,id2
-  [Parameter()]
+  # Find it on chrome://extensions (Developer mode on) under the extension's name.
+  [Parameter(Mandatory = $true, HelpMessage = "Extension ID from chrome://extensions")]
   [ValidatePattern("^[a-p]{32}$")]
-  [string[]] $ExtensionId = @("mcmlpkfikipagohcahncghpaonhionpp"),
+  [string[]] $ExtensionId,
 
   # Chromium browsers to register the host for (current Windows user only).
   [Parameter()]

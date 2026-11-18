@@ -682,7 +682,12 @@ function initializeStorage() {
       }
       try {
         const archiveResult = await archiveRestorePromise;
-        await appendFlowDiagnostic("archive_restore_completed", {
+        await chrome.storage.local.set({
+          "nativeHost.status": archiveResult.skipped === "host-unavailable" ? "not-installed" : "connected"
+        });
+        await appendFlowDiagnostic(archiveResult.skipped
+          ? "archive_restore_skipped"
+          : "archive_restore_completed", {
           elapsedMs: Date.now() - initializationStartedAt,
           restored: archiveResult.restored,
           synchronized: archiveResult.synchronized
@@ -1287,6 +1292,10 @@ async function synchronizeJobStatusesNow(message) {
   }
 
   const sharedStatuses = await globalThis.JobCollectorNativeBackup.getJobStatuses(siteId);
+  if (sharedStatuses === null) {
+    // Optional backup host is not installed: local storage is the only source of truth.
+    return { ok: true, openedJobs, hiddenJobs, sharedArchive: false };
+  }
   const mergedOpenedJobs = {};
   const mergedHiddenJobs = {};
   for (const [jobId, status] of Object.entries(sharedStatuses)) {
@@ -1752,7 +1761,21 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     });
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+async function openWelcomeTourIfNeeded(details) {
+  if (!details || details.reason !== "install") {
+    return;
+  }
+  const values = await chrome.storage.local.get("onboarding.completed");
+  if (values["onboarding.completed"]) {
+    return;
+  }
+  await chrome.tabs.create({ url: chrome.runtime.getURL("onboarding/welcome.html") });
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
+  void openWelcomeTourIfNeeded(details).catch((error) => {
+    console.error("[Job Extensions] Could not open the welcome tour", error);
+  });
   void initializeStorage().then(async () => {
     await recoverStaleLinkedInRun();
     await globalThis.JobCollectorNaukriBackground.recoverStaleRun();

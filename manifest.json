@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Job Extensions",
-  "version": "0.4.0",
-  "description": "A local-only LinkedIn, Naukri, and Indeed jobs collector with a live results page.",
+  "version": "0.5.0",
+  "description": "Collects job listings from your own LinkedIn, Naukri and Indeed searches into one local, sortable list. Includes a guided tour and sample data.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "permissions": [
     "storage",
     "scripting",
@@ -20,7 +26,13 @@
   },
   "action": {
     "default_title": "Job Extensions",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "content_scripts": [
     {

@@ -2,3 +2,11 @@
 /job-history-backup.jsonl
 /job-status-backup.jsonl
 /native-host/publish/
+
+# Dependencies and build output (rebuilt locally; never share)
+node_modules/
+native-host/bin/
+native-host/obj/
+# Per-machine host manifest written by native-host/install.ps1 (contains local paths/IDs)
+/native-host/com.jobextensions.history.json
+*.jsonl

@@ -1,5 +1,43 @@
 # Job Extensions
 
+A free Chrome extension that collects the job listings from **your own** LinkedIn, Naukri and Indeed searches into one clean, sortable list on your computer, split into **Easy Apply** and **Company Apply**. It never applies, saves, or messages anyone for you, and nothing is uploaded anywhere.
+
+## Install in 2 minutes (no coding needed)
+
+1. On this GitHub page click the green **Code** button → **Download ZIP**.
+2. Extract the ZIP into a folder you will keep, e.g. `Documents\JobExtensions`. *(Do not delete or move this folder later; Chrome runs the extension from it.)*
+3. Open Chrome and go to `chrome://extensions`.
+4. Turn on **Developer mode** (switch at the top-right).
+5. Click **Load unpacked** and choose the extracted folder: the one that contains `manifest.json`.
+6. A **welcome tour** opens automatically. Click **Next** through it; at the end you can load **sample jobs** to see how the results page looks.
+7. Pin the icon: click the puzzle-piece icon in Chrome's toolbar → pin **Job Extensions**.
+
+Works the same way in **Edge** (`edge://extensions`) and **Brave** (`brave://extensions`).
+
+## How to use it
+
+1. Open a job search on a supported site and set your filters as usual:
+   - **LinkedIn**: a Jobs search results page (`linkedin.com/jobs/search-results/…`)
+   - **Naukri**: any search results page (`naukri.com/…-jobs`)
+   - **Indeed India**: a search with a keyword (`in.indeed.com/jobs?q=…`)
+2. Click the **Job Extensions** icon → **Start**. Keep that tab open and visible while it runs. **Stop** works any time.
+3. Click **View** to open your results: switch sites at the top, use the tabs, search, filters, and click **Apply** to open a job. Opened jobs are marked so you don't apply twice.
+
+The first time you open the popup on a new site it shows **"New to <site>? See how it works →"**, a short step-by-step guide for that site. You can reopen the full tour any time from the popup (**How it works**) or the results page (**⚙ → Help & tour**).
+
+## FAQ
+
+- **The Start button is greyed out.** You're not on a supported search page, or that site reached its daily limit or is cooling down. The popup shows the reason under the buttons.
+- **Why did my run stop by itself?** It stops at the per-run/day limits, or when the site shows a captcha, sign-in wall or "unusual activity" page. That site then rests for 24 hours (48 hours if it happens again within a week). It never retries on its own.
+- **Is my data sent anywhere?** No. Everything is stored in your browser (Chrome extension storage). Only the three job sites are ever accessed.
+- **How do I update to a new version?** Download the new ZIP and extract it **over the same folder** (replace the files), then click the ↻ reload icon on the extension's card in `chrome://extensions`. Your collected jobs are kept.
+- **Will removing the extension delete my jobs?** Yes. Chrome deletes an extension's data when it is removed. Use **⚙ → Export** on the results page first if you want a copy.
+- **Where are the sample jobs from?** They are made up (companies like "Acme Analytics"). A yellow banner marks them; they disappear automatically once you collect real jobs, or click **Clear sample data**.
+
+---
+
+## Detailed behaviour (reference)
+
 Job Extensions is a local Chrome extension that collects visible job results from LinkedIn, Naukri, and Indeed into a site-aware results page. It does not click Apply or Save.
 
 Naukri job details are read from visible result cards in the active page DOM. A Naukri-only, read-only observer captures the page's own search API response to get `companyApplyJob`, `questionnaireIdPresent`, and `applyRedirectUrl`; the extension does not replay the API request. **Easy Apply** includes both Naukri in-platform questionnaire flows (`questionnaireIdPresent: true` or `false`); **Company Apply** is used for `companyApplyJob: true` or a valid external apply redirect when that flag is missing. Conflicting or incomplete evidence is not guessed into either category and remains available under **All**. Missing API flags do not block capture, and a later capture with stronger evidence updates the saved record automatically. If Naukri returns HTTP 406 because it requires reCAPTCHA verification, complete the verification on the page, reload, and start a new run.
@@ -18,15 +56,17 @@ Use **Settings → Flow logs** on the Results page to choose Results Page, Linke
 
 Use the **Settings** gear on the results page to open **History**, **Export**, **Skip Title**, **View Logs**, and **Flow logs** settings. Skip titles are managed for the currently selected platform and saved under that site's namespace. They are restored from the local archive after an extension reinstall. A title is skipped only when the entire job title matches (case-insensitive, ignoring surrounding spaces); similar or longer titles are still captured. The former built-in title exclusions have been removed.
 
-## Install
+## Advanced (optional): cross-profile backup helper (Windows)
 
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Choose **Load unpacked** and select this project folder.
-4. In PowerShell, run `.\native-host\install.ps1` from the project folder. This builds the local native-messaging helper and registers it for Chrome, Brave, and Edge (current Windows user). Each browser may give the unpacked extension a different ID; pass every ID shown on the browsers' extensions pages, for example `-ExtensionId <chromeId>,<braveId>`. Use `-Browser Chrome,Brave` to register only some browsers.
-5. Fully restart the browser, then reload the extension on its extensions page.
+**Not needed for normal use.** Without it the extension works fully and keeps data in Chrome's own storage. The helper is a small native program that additionally mirrors your jobs, settings and opened/hidden status to an append-only file in the project folder, so data survives an extension reinstall and is shared between Chrome profiles/browsers on the same Windows account.
 
-The extension also runs in Brave (`brave://extensions`) and Edge (`edge://extensions`) with the same steps. Without a registered helper, Start fails with "Specified native messaging host not found." The browsers share one archive, so only run collection in one browser at a time.
+Requirements: Windows, the [.NET 9 SDK](https://dotnet.microsoft.com/download), and PowerShell.
+
+1. Load the extension (steps above) and copy its **ID** from `chrome://extensions`.
+2. In PowerShell, from the project folder, run `.\native-host\install.ps1 -ExtensionId <yourId>`. Each browser may give the unpacked extension a different ID; pass all of them, e.g. `-ExtensionId <chromeId>,<braveId>`. Use `-Browser Chrome,Brave` to register only some browsers.
+3. Fully restart the browser, then reload the extension.
+
+With the helper installed, all registered browsers share one archive, so only run collection in one browser at a time. Without it, each browser keeps its own separate data.
 
 The native host keeps one append-only archive, `job-history-backup.jsonl`, in the project folder. It contains job snapshots and durable settings. Per-job opened/hidden status changes are kept in a separate small append-only file, `job-status-backup.jsonl` (also excluded from Git), so status checks stay fast; on first use the host copies any statuses already in the main archive into it. The archive is excluded from Git so local job data is not committed. Chrome profiles using the same extension ID, Windows user account, and installed native host share statuses through this file. Open results pages refresh shared statuses when focused and every 15 seconds while visible. Status syncs run one at a time per site, and a status changed while a sync is running is never overwritten by that sync. This is local to one Windows account and does not sync between devices or Windows accounts. Temporary file-sharing locks are retried. Startup restoration reads bounded archive pages of up to 500 records and batches record synchronization; the installed native host must be rebuilt from the current source to support that page size. A job is saved to extension storage before archive synchronization, so an archive write issue does not interrupt capture; it is reported in the service worker console and reconciled from local records on the next extension startup. After changing the native host, close all Chrome windows and rerun `.\native-host\install.ps1` to rebuild and register it before reopening Chrome. Do not delete or move the archive if you want reinstall recovery. Keep a separate copy when moving the project or device.
 
@@ -46,7 +86,7 @@ Indeed is additionally limited to three runs per day, with no additional gap bet
 
 ## Extension access and page scripts
 
-The extension uses only `storage`, `scripting`, `tabs`, and `alarms`; host access is limited to the three supported domains. Content scripts are scoped to their own site's match patterns:
+The extension uses `storage`, `scripting`, `tabs`, `alarms`, and `nativeMessaging` (only for the optional backup helper); host access is limited to the three supported domains. Content scripts are scoped to their own site's match patterns:
 
 | Page match | Scripts loaded |
 | --- | --- |
@@ -71,3 +111,12 @@ The popup retains the terminal run's captured-job count, last page, and (for Ind
 ## Updating selectors
 
 Save an HTML fixture in `tests/fixtures`, update only that site's `selectors.js` and adapter, then update its fixture tests. Run the full regression suite before loading the extension again. See [the add-a-site checklist](docs/ADD_A_SITE.md) for the full process.
+
+## Development
+
+No build step. Plain JavaScript, loaded directly by Chrome. To run the tests (Node 18+):
+
+```
+npm install
+npm test
+```

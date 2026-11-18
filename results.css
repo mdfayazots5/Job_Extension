@@ -1582,3 +1582,54 @@ body a.apply-link[data-apply-type="company"]::after {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Sample-data banner (shown while welcome-tour demo jobs are present for the current site). */
+.demo-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border: 1px solid #f2d27a;
+  border-radius: 10px;
+  background: #fff8e1;
+  color: #5b4300;
+}
+.demo-banner-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f2b705;
+  color: #2b2000;
+  font-size: 12px;
+  font-weight: 700;
+}
+.demo-banner-text {
+  flex: 1 1 260px;
+  margin: 0;
+  font-size: 13px;
+}
+.demo-banner-actions {
+  display: flex;
+  gap: 8px;
+}
+.demo-banner-link,
+.demo-banner-clear {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.demo-banner-clear {
+  border-color: #5b4300;
+  background: #5b4300;
+  color: #fff8e1;
+}
+@media (prefers-color-scheme: dark) {
+  .demo-banner { border-color: #6b5410; background: #2e2610; color: #f6dd8f; }
+  .demo-banner-clear { border-color: #f6dd8f; background: #f6dd8f; color: #2e2610; }
+}

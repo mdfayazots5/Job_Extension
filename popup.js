@@ -3,8 +3,42 @@
 const elements = {
   start: document.getElementById("start"),
   stop: document.getElementById("stop"),
-  viewResults: document.getElementById("view-results")
+  viewResults: document.getElementById("view-results"),
+  // Optional helpers (hint line + guide links); every use is null-safe.
+  hint: document.getElementById("hint"),
+  guideLink: document.getElementById("guide-link"),
+  helpLink: document.getElementById("help-link")
 };
+
+const NO_SITE_HINT = "Open a job search on LinkedIn, Naukri or Indeed, then click Start.";
+
+function showHint(text, kind = "") {
+  if (!elements.hint) {
+    return;
+  }
+  elements.hint.textContent = text || "";
+  elements.hint.hidden = !text;
+  elements.hint.dataset.kind = kind;
+}
+
+function openOnboarding(hash = "") {
+  return chrome.tabs.create({ url: chrome.runtime.getURL(`onboarding/welcome.html${hash}`) });
+}
+
+// First visit to a site: offer its step-by-step guide until the user has seen it once.
+async function renderSiteGuideLink() {
+  if (!elements.guideLink) {
+    return;
+  }
+  if (!activeAdapter) {
+    elements.guideLink.hidden = true;
+    return;
+  }
+  const seenKey = `onboarding.site.${activeAdapter.id}.seen`;
+  const values = await chrome.storage.local.get([seenKey]);
+  elements.guideLink.hidden = values[seenKey] === true;
+  elements.guideLink.textContent = `New to ${activeAdapter.label || activeAdapter.id}? See how it works →`;
+}
 
 let storageSnapshot = {};
 let activeSiteId = null;
@@ -107,6 +141,8 @@ async function refreshStorageSnapshot() {
       elements.start.title = host === "in.indeed.com"
         ? "Open an Indeed /jobs search page with a search term."
         : "Open a LinkedIn, Naukri, or Indeed search results page.";
+      showHint(host === "in.indeed.com" ? elements.start.title : NO_SITE_HINT);
+      await renderSiteGuideLink();
       return;
     }
     storageSnapshot = await chrome.storage.local.get([
@@ -116,10 +152,14 @@ async function refreshStorageSnapshot() {
     ]);
     await chrome.storage.local.set({ "ui.lastSite": activeSiteId });
     renderFromStorage();
+    // Explain a disabled Start (daily cap / cooldown) in visible text, not just a tooltip.
+    showHint(elements.start.title);
+    await renderSiteGuideLink();
   } catch (error) {
     elements.start.title = `Could not read collector status: ${
       error instanceof Error ? error.message : String(error)
     }`;
+    showHint(elements.start.title, "error");
   }
 }
 
@@ -169,9 +209,23 @@ async function sendAction(type) {
     }
     if (actionError) {
       button.title = actionError;
+      showHint(actionError, "error");
     }
   }
 }
+
+elements.guideLink?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  if (!activeAdapter) {
+    return;
+  }
+  await chrome.storage.local.set({ [`onboarding.site.${activeAdapter.id}.seen`]: true });
+  await openOnboarding(`#site=${activeAdapter.id}`);
+});
+elements.helpLink?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  await openOnboarding(activeAdapter ? `#site=${activeAdapter.id}` : "");
+});
 
 elements.start.addEventListener("click", () => sendAction("START_RUN"));
 elements.stop.addEventListener("click", () => sendAction("STOP_RUN"));

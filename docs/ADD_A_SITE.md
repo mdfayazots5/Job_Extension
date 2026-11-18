@@ -12,6 +12,7 @@ Each supported site lives in one folder under `src/sites/<site-id>/` and has its
 8. Set conservative per-site limits and cooldown timing in the site's config.
 9. Run LinkedIn, Naukri, and all other supported-site regression tests, then test the new site with its fixture and a manual run.
 10. Update the results page switcher when the new site becomes active.
+11. Add `src/sites/<site-id>/guide.js` registering `JobCollectorSiteGuides[<site-id>]` with `label`, `accent`, `searchUrl`, `pageHint`, `summary`, `collects[]`, `steps[{title,text}]` and `demoRecords(now)` (about 6 made-up jobs in that site's normalized record shape, with `url` set to `searchUrl`). Add the `<script>` tag to `results.html` and `onboarding/welcome.html` (never to a content script). The welcome tour, per-site guide (`welcome.html#site=<site-id>`), popup "New to <site>?" link and sample data then pick the site up automatically.
 
 Never alter the shared run loop, storage schema, or other sites to accommodate selectors. Records, run state, budgets, cooldowns, opened state, kill-switch counters, and diagnostics use the site namespace. The only shared record container uses keys in the form `<site-id>:<job-id>`.
 

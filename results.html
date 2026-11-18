@@ -63,10 +63,20 @@
             <button id="skip-titles-button" class="settings-menu-item" type="button" hidden>Skip Title</button>
             <button id="view-logs-button" class="settings-menu-item" type="button">View Logs</button>
             <button id="flow-logging-button" class="settings-menu-item" type="button">Flow logs</button>
+            <button id="tour-button" class="settings-menu-item" type="button">Help &amp; tour</button>
           </div>
         </div>
         <p id="run-subtitle" class="subtitle" hidden></p>
       </header>
+
+      <aside id="demo-banner" class="demo-banner" role="status" hidden>
+        <span class="demo-banner-badge">Sample data</span>
+        <p id="demo-banner-text" class="demo-banner-text">You're looking at sample jobs, not real listings. They disappear automatically once you collect real jobs.</p>
+        <div class="demo-banner-actions">
+          <button id="demo-howto-button" class="demo-banner-link" type="button">How to collect real jobs</button>
+          <button id="demo-clear-button" class="demo-banner-clear" type="button">Clear sample data</button>
+        </div>
+      </aside>
 
       <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title">
         <form method="dialog">
@@ -236,6 +246,10 @@
     <script src="src/sites/indeed/parse.js"></script>
     <script src="src/sites/indeed/adapter.js"></script>
     <script src="src/sites/registry.js"></script>
+    <script src="src/sites/linkedin/guide.js"></script>
+    <script src="src/sites/naukri/guide.js"></script>
+    <script src="src/sites/indeed/guide.js"></script>
+    <script src="src/core/demo-data.js"></script>
     <script src="results.js"></script>
   </body>
 </html>

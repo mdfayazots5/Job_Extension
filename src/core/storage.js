@@ -62,13 +62,21 @@
     const next = Object.fromEntries(
       Object.entries(current).filter(([key]) => !key.startsWith(prefix))
     );
+    // Sample (demo) jobs from the welcome tour make way as soon as real jobs are saved for a site.
+    const hasRealJob = Object.values(jobsById).some((record) => (
+      record && typeof record === "object" && record.demo !== true
+    ));
     for (const [jobId, record] of Object.entries(jobsById)) {
       if (!jobId || !record || typeof record !== "object" || Array.isArray(record)) {
         throw new Error(`Job record "${jobId}" is invalid.`);
       }
+      if (hasRealJob && record.demo === true) {
+        continue;
+      }
       next[`${prefix}${jobId}`] = record;
     }
     const changedRecords = Object.entries(jobsById)
+      .filter(([, record]) => record.demo !== true)
       .filter(([jobId, record]) => JSON.stringify(current[`${prefix}${jobId}`]) !== JSON.stringify(record))
       .map(([jobId, record]) => ({ siteId, record }));
     const opened = Object.prototype.hasOwnProperty.call(additionalValues, siteKeys.openedJobs)

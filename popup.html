@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>LinkedIn Jobs</title>
+    <title>Job Extensions</title>
     <style>
       :root { color-scheme: light dark; font: 14px system-ui, sans-serif; }
       body { box-sizing: border-box; margin: 0; width: 220px; padding: 10px; }
@@ -14,8 +14,18 @@
       #stop { background: #b73a4b; color: #fff; }
       button:disabled { cursor: not-allowed; opacity: .5; }
       #view-results { background: #edf3fa; color: #174f86; }
+      .hint { margin: 8px 0 0; color: #4a5666; font-size: 12px; line-height: 1.4; }
+      .hint[data-kind="error"] { color: #b73a4b; }
+      .links { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 12px; }
+      .links a { color: #0a66c2; font-weight: 600; text-decoration: none; }
+      .links a:hover { text-decoration: underline; }
+      #guide-link { color: #8a5a00; }
       @media (prefers-color-scheme: dark) {
         #view-results { background: #283746; color: #a9d2ff; }
+        .hint { color: #a7b3c2; }
+        .hint[data-kind="error"] { color: #ff8a99; }
+        .links a { color: #8fc1ff; }
+        #guide-link { color: #f6dd8f; }
       }
     </style>
   </head>
@@ -26,6 +36,11 @@
         <button id="stop" type="button">Stop</button>
         <button id="view-results" type="button">View</button>
       </section>
+      <p id="hint" class="hint" role="status" hidden></p>
+      <div class="links">
+        <a id="guide-link" href="#" hidden></a>
+        <a id="help-link" href="#">How it works</a>
+      </div>
     </main>
     <script src="config.js"></script>
     <script src="src/core/storage.js"></script>

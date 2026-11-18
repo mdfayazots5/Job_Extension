@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Welcome to Job Extensions</title>
+    <link rel="stylesheet" href="welcome.css">
+  </head>
+  <body>
+    <main class="tour-shell">
+      <header class="tour-header">
+        <span class="brand-mark" aria-hidden="true">JF</span>
+        <div>
+          <p class="tour-kicker" id="tour-kicker">Getting started</p>
+          <p class="tour-progress-text" id="tour-progress-text">Step 1 of 6</p>
+        </div>
+        <button id="tour-skip" class="tour-skip" type="button">Skip tour</button>
+      </header>
+
+      <ol id="tour-dots" class="tour-dots" aria-label="Tour progress"></ol>
+
+      <section id="tour-card" class="tour-card" aria-live="polite">
+        <!-- Filled by welcome.js -->
+      </section>
+
+      <nav class="tour-nav" aria-label="Tour navigation">
+        <button id="tour-back" class="tour-button secondary" type="button">Back</button>
+        <button id="tour-next" class="tour-button primary" type="button">Next</button>
+      </nav>
+
+      <p id="tour-status" class="tour-status" role="status"></p>
+    </main>
+
+    <script src="../config.js"></script>
+    <script src="../src/core/storage.js"></script>
+    <script src="../src/sites/linkedin/selectors.js"></script>
+    <script src="../src/sites/linkedin/metadata.js"></script>
+    <script src="../src/sites/linkedin/adapter.js"></script>
+    <script src="../src/sites/naukri/config.js"></script>
+    <script src="../src/sites/naukri/selectors.js"></script>
+    <script src="../src/sites/naukri/adapter.js"></script>
+    <script src="../src/sites/indeed/config.js"></script>
+    <script src="../src/sites/indeed/selectors.js"></script>
+    <script src="../src/sites/indeed/parse.js"></script>
+    <script src="../src/sites/indeed/adapter.js"></script>
+    <script src="../src/sites/registry.js"></script>
+    <script src="../src/sites/linkedin/guide.js"></script>
+    <script src="../src/sites/naukri/guide.js"></script>
+    <script src="../src/sites/indeed/guide.js"></script>
+    <script src="../src/core/demo-data.js"></script>
+    <script src="welcome.js"></script>
+  </body>
+</html>
